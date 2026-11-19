@@ -1,0 +1,22 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment files
+.env
+
+# Editor & IDE directories
+.vscode/
+.idea/
+
+# Operating system metadata
+Thumbs.db
+[Dd]esktop.ini
+.DS_Store
+
+# Explicit exception: Ensure baseline.json is NOT ignored
+!output/baseline.json

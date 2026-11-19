@@ -1,0 +1,5 @@
+Sentinel FIM - Test Sample File
+================================
+This is a synthetic sample file created for File Integrity Monitoring (FIM) testing.
+Initial state: Clean / Unmodified.
+Use this file to simulate unauthorized modification, tampering, or deletion during Phase 1 testing.

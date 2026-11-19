@@ -1,0 +1,10 @@
+Sentinel FIM - Monitored Directory Guide
+========================================
+Purpose:
+This document serves as a monitored synthetic resource within a nested subdirectory.
+It simulates sensitive organizational documentation or operational procedures.
+
+Integrity Verification Rules:
+1. Any alteration to this file content must trigger an INTEGRITY ALERT.
+2. File hash changes should be detected using SHA-256 baseline verification.
+3. Deletion or movement of this file must register as a missing/deleted event.

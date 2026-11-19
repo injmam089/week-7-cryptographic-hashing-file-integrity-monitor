@@ -1,0 +1,5 @@
+{
+  "algorithm": "sha256",
+  "monitored_directory": "monitored",
+  "baseline_file": "output/baseline.json"
+}

@@ -1,0 +1,12 @@
+# Sentinel FIM - Dependencies
+# Python Version: 3.10+
+#
+# Sentinel FIM relies exclusively on the Python standard library.
+# No external third-party packages are required.
+#
+# Standard library modules utilized:
+# - hashlib   (Cryptographic hashing: SHA-256)
+# - json      (Configuration & baseline file serialization)
+# - pathlib   (Object-oriented filesystem paths)
+# - os, sys   (Filesystem operations & environment handling)
+# - datetime  (Audit timestamps & event logging)
