@@ -1,4 +1,4 @@
-# Sentinel FIM — File Integrity Monitor
+﻿# Sentinel FIM â€” File Integrity Monitor
 
 A modular, lightweight File Integrity Monitoring (FIM) tool built in Python using cryptographic SHA-256 hashing to verify file integrity, detect unauthorized modifications, and flag anomalies across monitored directories.
 
@@ -28,34 +28,34 @@ File Integrity Monitoring relies on cryptographic hash functions to produce a un
 
 ```text
 sentinel-fim/
-│
-├── src/
-│   ├── __init__.py            # Package initialization and metadata
-│   ├── fim_monitor.py         # Primary orchestration entrypoint & CLI
-│   ├── hasher.py              # Cryptographic hashing engine (SHA-256)
-│   ├── baseline.py            # Baseline database creation and persistence
-│   └── integrity_checker.py   # Integrity comparison & anomaly detection
-│
-├── config/
-│   └── fim_config.json        # FIM operational configuration
-│
-├── monitored/                 # Monitored directory target
-│   ├── documents/
-│   │   └── guide.txt          # Synthetic nested sample data
-│   └── sample.txt             # Synthetic sample data for tamper testing
-│
-├── output/                    # Baseline & audit report storage
-│   └── .gitkeep
-│
-├── tests/                     # Unit and integration test suite
-│   └── __init__.py
-│
-├── screenshots/               # Visual proof and operational logs
-│   └── .gitkeep
-│
-├── .gitignore                 # Version control exclusion rules
-├── requirements.txt           # Dependency declaration (Standard library)
-└── README.md                  # Project documentation
+â”‚
+â”œâ”€â”€ src/
+â”‚   â”œâ”€â”€ __init__.py            # Package initialization and metadata
+â”‚   â”œâ”€â”€ fim_monitor.py         # Primary orchestration entrypoint & CLI
+â”‚   â”œâ”€â”€ hasher.py              # Cryptographic hashing engine (SHA-256)
+â”‚   â”œâ”€â”€ baseline.py            # Baseline database creation and persistence
+â”‚   â””â”€â”€ integrity_checker.py   # Integrity comparison & anomaly detection
+â”‚
+â”œâ”€â”€ config/
+â”‚   â””â”€â”€ fim_config.json        # FIM operational configuration
+â”‚
+â”œâ”€â”€ monitored/                 # Monitored directory target
+â”‚   â”œâ”€â”€ documents/
+â”‚   â”‚   â””â”€â”€ guide.txt          # Synthetic nested sample data
+â”‚   â””â”€â”€ sample.txt             # Synthetic sample data for tamper testing
+â”‚
+â”œâ”€â”€ output/                    # Baseline & audit report storage
+â”‚   â””â”€â”€ .gitkeep
+â”‚
+â”œâ”€â”€ tests/                     # Unit and integration test suite
+â”‚   â””â”€â”€ __init__.py
+â”‚
+â”œâ”€â”€ screenshots/               # Visual proof and operational logs
+â”‚   â””â”€â”€ .gitkeep
+â”‚
+â”œâ”€â”€ .gitignore                 # Version control exclusion rules
+â”œâ”€â”€ requirements.txt           # Dependency declaration (Standard library)
+â””â”€â”€ README.md                  # Project documentation
 ```
 
 ### Architecture Principles:
