@@ -6,6 +6,12 @@ __pycache__/
 .venv/
 venv/
 
+# Distribution / packaging
+.dist/
+dist/
+build/
+*.egg-info/
+
 # Environment files
 .env
 
@@ -20,3 +26,4 @@ Thumbs.db
 
 # Explicit exception: Ensure baseline.json is NOT ignored
 !output/baseline.json
+
