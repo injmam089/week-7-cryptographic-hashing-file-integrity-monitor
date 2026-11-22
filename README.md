@@ -20,9 +20,9 @@
 
 ## 1. Project Overview
 
-**Sentinel FIM (File Integrity Monitor)** is a Python-based defensive cybersecurity tool developed to identify unauthorized changes to files through cryptographic hashing.
+**Sentinel FIM (File Integrity Monitor)** is a Python-based defensive cybersecurity tool developed to identify unauthorized changes to files through cryptographic hashing and authenticated baseline storage.
 
-The project uses the **SHA-256 cryptographic hash algorithm** to establish a trusted baseline of files and subsequently compare the current filesystem state against that baseline.
+The project uses the **SHA-256 cryptographic hash algorithm** to establish a trusted baseline of files and **HMAC-SHA256** to authenticate the baseline payload. This ensures that any tampering with monitored files cannot be concealed by silently altering the baseline database without possessing the symmetric secret key.
 
 By comparing cryptographic digests, Sentinel FIM identifies:
 
@@ -54,14 +54,18 @@ The primary objectives of this project are:
 |---|---|
 | SHA-256 Hashing | Generates cryptographic fingerprints using SHA-256. |
 | Streaming File Processing | Processes files in 1 MiB chunks to keep memory usage bounded. |
-| Baseline Generation | Records trusted file paths and SHA-256 digests in JSON format. |
-| Integrity Verification | Compares current file hashes against the saved baseline. |
+| HMAC-SHA256 Baseline Authentication | Authenticates baseline entries (`algorithm`, `files`, `version`) using a 256-bit symmetric key. |
+| Baseline Generation | Records trusted file paths and SHA-256 digests in an authenticated JSON envelope. |
+| Integrity Verification | Verifies the HMAC authentication tag before comparing current file hashes against the baseline. |
 | Tampering Detection | Identifies modified, created, and deleted files. |
+| Exclusive Key Generation | Generates 256-bit HMAC keys with exclusive file creation, refusing to overwrite existing keys. |
 | Descriptor-Bound Hashing | Performs hashing through opened file descriptors to reduce TOCTOU risks. |
 | File Stability Checks | Detects relevant metadata changes during file inspection. |
 | Atomic Baseline Storage | Uses temporary-file writing and atomic replacement. |
+| NTFS ADS Discovery | Enumerates Alternate Data Stream names and sizes on Windows NTFS volumes. |
+| Legacy Baseline Migration | Converts unsigned baselines to the authenticated envelope format with backup safety. |
 | Error Reporting | Surfaces scanning failures instead of reporting an incomplete scan as clean. |
-| CLI Interface | Supports baseline generation and integrity verification through command-line arguments. |
+| CLI Interface | Supports baseline, monitor, generate-key, and migrate-baseline modes. |
 
 ## 4. Cryptographic Concepts
 
@@ -140,8 +144,7 @@ Cryptographic hashing provides integrity detection, not complete system protecti
 Important limitations:
 
 - Hashing does not prevent an attacker from modifying a file.
-- SHA-256 does not authenticate the baseline storage location.
-- An attacker with sufficient write access to the baseline could potentially replace the recorded hashes.
+- HMAC-SHA256 authenticates the baseline payload, but an attacker with both the secret key and write access could still modify files and update the baseline undetected.
 - A matching content hash does not prove that file permissions, ownership, or access-control settings are unchanged.
 - A compromised system may also compromise the integrity-monitoring process.
 
@@ -166,6 +169,8 @@ For stronger protection, baseline storage should be protected through restrictiv
 | Module | Purpose |
 |---|---|
 | `hashlib` | SHA-256 digest generation. |
+| `hmac` | HMAC-SHA256 authentication tag computation and verification. |
+| `secrets` | Cryptographically secure random key generation. |
 | `os` | File descriptors, filesystem operations, and atomic replacement. |
 | `stat` | File metadata inspection. |
 | `pathlib` | Filesystem path handling. |
@@ -204,8 +209,7 @@ week-7-cryptographic-hashing-file-integrity-monitor/
 │   ├── 02-baseline-generation.png
 │   ├── 03-clean-integrity-check.png
 │   ├── 04-tampering-detection.png
-│   ├── 05-restored-integrity.png
-│   └── 06-unit-test-results.png
+│   └── 05-restored-integrity.png
 │
 ├── src/
 │   ├── __init__.py
@@ -244,7 +248,7 @@ Responsibilities:
 
 **2. `src/baseline.py` — Baseline Manager**
 
-Responsible for creating, validating, loading, and saving trusted baseline records.
+Responsible for creating, validating, loading, and saving trusted baseline records with HMAC-SHA256 authentication.
 
 Responsibilities:
 
@@ -252,8 +256,11 @@ Responsibilities:
 - Validates JSON baseline structures.
 - Validates SHA-256 digest formats.
 - Normalizes file paths.
+- Computes and verifies HMAC-SHA256 authentication tags.
+- Generates HMAC keys with exclusive file creation.
 - Saves baseline records using temporary-file writing and atomic replacement.
 - Loads and validates existing baseline data.
+- Migrates legacy unsigned baselines to the authenticated envelope format.
 
 **3. `src/integrity_checker.py` — Integrity Checker**
 
@@ -276,8 +283,10 @@ Responsibilities:
 
 - Parses command-line arguments.
 - Loads JSON configuration.
-- Executes baseline generation.
-- Executes integrity verification.
+- Resolves HMAC keys through the key resolution hierarchy.
+- Executes baseline generation with HMAC authentication.
+- Executes integrity verification with HMAC validation.
+- Executes key generation and legacy baseline migration.
 - Displays audit results.
 - Returns process exit codes.
 
@@ -403,7 +412,30 @@ The implementation uses:
 
 This helps prevent a partially written baseline from replacing the previous baseline during an interrupted save operation.
 
-### 7.6 Scan Error Handling
+### 7.6 HMAC-SHA256 Baseline Authentication
+
+Sentinel FIM authenticates baseline records using HMAC-SHA256. The baseline is stored as a structured JSON envelope containing the following fields:
+
+```json
+{
+    "version": 1,
+    "algorithm": "sha256",
+    "auth_mode": "hmac-sha256",
+    "hmac": "<64-character HMAC-SHA256 authentication tag>",
+    "created_at": "<ISO-8601 timestamp>",
+    "files": {
+        "relative/path.txt": "<SHA-256 hex digest>"
+    }
+}
+```
+
+**Authentication Scope:** The canonical HMAC payload is constructed from exactly three fields: `algorithm`, `files` (the mapping of relative paths to SHA-256 digests), and `version`. Keys in `files` are sorted alphabetically and serialized using compact JSON separators.
+
+**Unauthenticated Metadata:** The `created_at` timestamp, `auth_mode`, and the `hmac` tag string itself reside outside the canonical payload and are **not** covered by the HMAC calculation.
+
+HMAC-SHA256 provides data integrity and origin authenticity for the authenticated fields. It does not prevent write access to monitored files on disk; it ensures that alterations to the baseline entries will be detected during verification when the secret key is protected.
+
+### 7.7 Scan Error Handling
 
 Filesystem errors must not be silently treated as successful integrity verification.
 
@@ -411,7 +443,7 @@ If the scanner encounters relevant errors, the integrity checker reports them an
 
 This is important because an incomplete scan cannot reliably establish that all monitored files are intact.
 
-### 7.7 Baseline Storage Isolation
+### 7.8 Baseline Storage Isolation
 
 The baseline file is stored separately from the monitored directory:
 
@@ -425,7 +457,7 @@ output/
 
 This prevents the baseline file from being included in its own monitored scan.
 
-It does not, by itself, protect the baseline from an attacker who has sufficient write permissions.
+HMAC-SHA256 authentication provides an additional layer of protection by ensuring that modifications to the baseline data are detectable without the secret key.
 
 ## 8. Configuration
 
@@ -450,6 +482,32 @@ Sentinel FIM uses a JSON configuration file:
 | `baseline_file` | Location used to save or load baseline JSON data. |
 
 Command-line arguments can override the configured monitored directory and baseline file.
+
+### HMAC Key Management
+
+#### Generating an HMAC Secret Key
+
+Generate a 256-bit cryptographically secure key:
+
+```bash
+python -m src.fim_monitor --mode generate-key --key-file config/.baseline.key
+```
+
+If the destination file already exists, Sentinel FIM refuses to overwrite it and raises `FileExistsError`.
+
+Auto-generated keys use `secrets.token_bytes(32)` for 256 bits of OS CSPRNG entropy.
+
+#### Key Resolution Order
+
+When running baseline or monitor operations, the HMAC key is resolved in the following order:
+
+1. `--key <KEY>` — Command-line argument (64-character hex decoded to 32 bytes, or raw string encoded as UTF-8).
+2. `--key-file <PATH>` — Read bytes from a key file (64-character ASCII hex decoded to 32 bytes, or used as raw bytes).
+3. `SENTINEL_HMAC_KEY` environment variable (same hex/UTF-8 decoding as `--key`).
+4. Default key file: `config/.baseline.key` (or `<baseline_dir>/.baseline.key` if `config/` does not exist).
+5. Auto-generation (baseline mode only): If no key is found, a new 32-byte key is generated and saved at the default key path.
+
+> **Note:** User-supplied keys via `--key` or environment variables are not subject to minimum length or entropy enforcement. The security of user-supplied keys depends on the operator providing high-entropy key material.
 
 ## 9. Installation & Setup
 
@@ -496,25 +554,29 @@ Sentinel FIM uses Python's standard library and does not require third-party pac
 
 ## 10. Usage Guide
 
-The application supports two primary execution modes:
+The application supports four execution modes:
 
-1. Baseline Generation.
-2. Integrity Verification.
+1. **Baseline Generation** (`baseline`) — Scan files and create an HMAC-authenticated baseline.
+2. **Integrity Verification** (`monitor`) — Compare current files against the authenticated baseline.
+3. **Key Generation** (`generate-key`) — Generate a new 256-bit HMAC secret key.
+4. **Legacy Migration** (`migrate-baseline`) — Convert an unsigned baseline to the authenticated envelope format.
 
 General command format:
 
 ```bash
-python -m src.fim_monitor --mode <baseline|monitor> [OPTIONS]
+python -m src.fim_monitor --mode <baseline|monitor|generate-key|migrate-baseline> [OPTIONS]
 ```
 
 ### 10.1 Command-Line Arguments
 
 | Argument | Description |
 |---|---|
-| `--mode` | Required execution mode: `baseline` or `monitor`. |
+| `--mode` | Required execution mode: `baseline`, `monitor`, `generate-key`, or `migrate-baseline`. |
 | `--dir` | Optional monitored directory path. |
 | `--baseline` | Optional baseline JSON path. |
 | `--config` | Optional custom configuration file path. |
+| `--key` | Optional HMAC key (64-character hex decoded to 32 bytes, or raw string). |
+| `--key-file` | Optional path to read or write the binary or hex HMAC secret key. |
 
 ### 10.2 Baseline Generation
 
@@ -609,7 +671,27 @@ To perform verification with the same custom paths:
 python -m src.fim_monitor --mode monitor --dir monitored --baseline output/custom_baseline.json
 ```
 
-### 10.5 Exit Code Semantics
+### 10.5 Key Generation Mode
+
+Generate a new 256-bit cryptographically secure HMAC key:
+
+```bash
+python -m src.fim_monitor --mode generate-key --key-file config/.baseline.key
+```
+
+If the destination key file already exists, the command refuses to overwrite it and exits with code 1.
+
+### 10.6 Legacy Baseline Migration Mode
+
+Migrate an existing unauthenticated baseline file into the authenticated envelope format:
+
+```bash
+python -m src.fim_monitor --mode migrate-baseline --baseline output/baseline.json --key-file config/.baseline.key
+```
+
+During migration, an atomic backup copy is saved with `.bak` extension using exclusive creation before the authenticated baseline replaces the old file.
+
+### 10.7 Exit Code Semantics
 
 The CLI uses process exit codes to communicate execution results.
 
@@ -720,9 +802,17 @@ The automated tests are designed to verify:
 
 ### 12.4 Test Results
 
-Run the test command locally and record the actual result here.
+The test suite consists of **93 test cases** across 4 modules:
 
-Do not treat an expected test count as a verified result. The final test count and skipped tests should match the latest execution.
+| Test Module | Discovered | Passed | Skipped | Failures | Errors |
+|---|:---:|:---:|:---:|:---:|:---:|
+| `test_hasher.py` | 22 | 20 | 2 | 0 | 0 |
+| `test_baseline.py` | 34 | 34 | 0 | 0 | 0 |
+| `test_integrity_checker.py` | 16 | 16 | 0 | 0 | 0 |
+| `test_fim_monitor.py` | 21 | 21 | 0 | 0 | 0 |
+| **Total** | **93** | **91** | **2** | **0** | **0** |
+
+**Skipped Tests Explanation:** The 2 skipped tests (`test_symlinks_are_skipped_when_supported` and `test_symbolic_link_root_is_rejected_when_supported` in `test_hasher.py`) require the Windows `SeCreateSymbolicLinkPrivilege` user right (Developer Mode or elevated Administrator). Under standard user privileges, `Path.symlink_to()` raises `OSError` (WinError 1314) and the tests are safely skipped. Symlink rejection logic is independently validated through mock-based tests that pass unconditionally.
 
 ## 13. Evidence & Screenshots
 
@@ -735,7 +825,6 @@ The `screenshots/` directory contains visual evidence of the project's implement
 | `03-clean-integrity-check.png` | Successful integrity verification without detected changes. |
 | `04-tampering-detection.png` | Detection of a modified monitored file. |
 | `05-restored-integrity.png` | Integrity verification after restoring the original file content. |
-| `06-unit-test-results.png` | Terminal output from automated unit testing. |
 
 ### Project Evidence
 
@@ -759,26 +848,22 @@ The `screenshots/` directory contains visual evidence of the project's implement
 
 ![Restored Integrity](screenshots/05-restored-integrity.png)
 
-**6. Unit Test Results**
-
-![Unit Test Results](screenshots/06-unit-test-results.png)
-
 ## 14. Security Considerations & Limitations
 
 Sentinel FIM is designed for defensive file integrity auditing. However, it has limitations that should be understood before using it in a production environment.
 
 ### 14.1 Baseline Protection
 
-The baseline JSON file is a critical trust reference.
+The baseline JSON file is a critical trust reference. HMAC-SHA256 authentication prevents undetected modification of the baseline without the secret key.
 
-If an attacker can modify both the monitored files and the baseline, they may be able to conceal unauthorized changes.
+However, if an attacker obtains both write access and the HMAC key, they could modify monitored files and re-sign the baseline. Additionally, the HMAC does not protect against rollback to a previously valid baseline (see Section 14.6).
 
 Recommended protections:
 
-- Restrict write permissions on the baseline.
+- Restrict read and write permissions on the HMAC key file.
 - Store trusted baseline copies separately.
 - Use protected backups.
-- Consider external or digitally authenticated baseline storage.
+- Consider asymmetric digital signatures for non-repudiation.
 
 ### 14.2 On-Demand Monitoring
 
@@ -817,36 +902,57 @@ A failed or incomplete scan must not be interpreted as proof of integrity.
 
 Sentinel FIM surfaces scanning errors so that an administrator can investigate the affected files or directories.
 
+### 14.6 Baseline Rollback / Replay
+
+The HMAC authentication tag does not guarantee baseline freshness. The `created_at` timestamp and `auth_mode` fields are not included in the canonical HMAC payload. An attacker with access to a previously valid baseline could replace the current baseline with an earlier authenticated version; if the live files match that earlier state, verification will report clean status.
+
+### 14.7 NTFS Alternate Data Stream Scope
+
+On Windows NTFS, Sentinel FIM enumerates ADS names and byte sizes via Win32 APIs. It does **not** hash ADS content. On non-Windows platforms or non-NTFS filesystems, stream enumeration returns an empty list.
+
+### 14.8 TOCTOU Race Condition Boundaries
+
+Descriptor-bound checks in `hasher.py` reduce common time-of-check to time-of-use race windows by validating file metadata before and after chunk reading, but cannot guarantee absolute race-freedom against privileged concurrent actors on every operating system.
+
+### 14.9 Platform Verification
+
+Sentinel FIM has been developed and tested on Windows. Cross-platform standard library abstractions are used, but automated testing on Linux and macOS has not been independently verified.
+
 ## 15. Current Scope & Future Improvements
 
 ### 15.1 Current Implementation
 
-The current implementation focuses on:
+The current implementation includes:
 
 - SHA-256-based file fingerprinting.
-- Streaming file hashing.
-- Trusted baseline generation.
+- Streaming file hashing (1 MiB chunks).
+- HMAC-SHA256 baseline authentication.
+- Exclusive HMAC key generation.
+- Legacy baseline migration.
+- Trusted baseline generation with authenticated JSON envelopes.
 - JSON baseline validation.
 - Atomic baseline persistence.
 - Differential integrity comparison.
 - Modified, created, and deleted file detection.
+- NTFS Alternate Data Stream discovery (names and sizes).
 - Descriptor-bound file inspection.
 - Metadata stability checks.
 - Symbolic-link handling.
-- CLI-based execution.
-- Automated unit testing.
+- CLI-based execution with four modes.
+- Automated unit testing (93 tests).
 
 ### 15.2 Future Improvements
 
 Potential enhancements include:
 
-1. **Continuous Monitoring:** Integrate operating-system filesystem event mechanisms.
-2. **Baseline Authentication:** Introduce digitally signed baseline records.
-3. **Centralized Reporting:** Send audit results to a centralized logging platform.
-4. **Notification System:** Add email or dashboard notifications for detected anomalies.
-5. **Metadata Monitoring:** Extend checks to selected file permissions and ownership properties.
-6. **Scheduled Audits:** Support automated periodic integrity verification.
-7. **Enhanced Reporting:** Generate structured HTML or PDF audit reports.
+1. **Asymmetric Digital Signatures:** Replace or supplement HMAC with asymmetric signatures (e.g., ECDSA or Ed25519) to provide cryptographic non-repudiation.
+2. **Baseline Rollback Protection:** Add authenticated timestamps, monotonic sequence counters, or nonces to the canonical payload to prevent replay of earlier valid baselines.
+3. **Continuous Monitoring:** Integrate operating-system filesystem event mechanisms (e.g., `inotify`, `ReadDirectoryChangesW`).
+4. **ADS Content Hashing:** Extend NTFS Alternate Data Stream handling to hash stream contents, not only enumerate names and sizes.
+5. **Centralized Reporting:** Send audit results to a centralized logging platform.
+6. **Notification System:** Add email or dashboard notifications for detected anomalies.
+7. **Metadata Monitoring:** Extend checks to selected file permissions and ownership properties.
+8. **Enhanced Reporting:** Generate structured HTML or PDF audit reports.
 
 These are proposed improvements, not claims about existing functionality.
 
@@ -855,8 +961,9 @@ These are proposed improvements, not claims about existing functionality.
 Through this project, the following cybersecurity concepts were explored:
 
 - Cryptographic hashing and SHA-256.
+- HMAC-SHA256 message authentication.
 - File integrity monitoring.
-- Baseline generation and comparison.
+- Baseline generation, authentication, and comparison.
 - Cryptographic collision resistance.
 - Pre-image and second pre-image resistance.
 - Avalanche effect.
@@ -865,6 +972,7 @@ Through this project, the following cybersecurity concepts were explored:
 - Descriptor-bound file operations.
 - Symbolic-link security.
 - Atomic file operations.
+- Exclusive file creation for key safety.
 - Defensive error handling.
 - Security testing and verification.
 
@@ -876,8 +984,9 @@ Key learning outcomes:
 
 - Understanding how cryptographic hashes support file integrity verification.
 - Implementing SHA-256 hashing using Python.
+- Implementing HMAC-SHA256 baseline authentication.
 - Processing files through memory-bounded streaming.
-- Creating and validating JSON-based baselines.
+- Creating, authenticating, and validating JSON-based baselines.
 - Detecting unauthorized file modifications.
 - Applying defensive filesystem handling.
 - Structuring a Python security tool into reusable modules.
@@ -886,11 +995,11 @@ Key learning outcomes:
 
 ## 18. Conclusion
 
-**Sentinel FIM** demonstrates how cryptographic hashing can be applied to defensive cybersecurity and file integrity monitoring.
+**Sentinel FIM** demonstrates how cryptographic hashing and message authentication can be applied to defensive cybersecurity and file integrity monitoring.
 
-By establishing trusted SHA-256 baselines and comparing them against current filesystem states, the application can identify modified, created, and deleted files.
+By establishing HMAC-authenticated SHA-256 baselines and comparing them against current filesystem states, the application can identify modified, created, and deleted files while detecting unauthorized baseline tampering.
 
-The project also emphasizes secure implementation practices, including streaming file processing, descriptor-bound inspection, metadata stability checks, atomic baseline persistence, and explicit scan-error handling.
+The project also emphasizes secure implementation practices, including streaming file processing, descriptor-bound inspection, metadata stability checks, atomic baseline persistence, exclusive key generation, and explicit scan-error handling.
 
 Sentinel FIM provides a practical foundation for understanding file integrity monitoring and the role of cryptographic verification in system security.
 
