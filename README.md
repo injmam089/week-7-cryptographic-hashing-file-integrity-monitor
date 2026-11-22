@@ -1,228 +1,437 @@
-﻿# Sentinel FIM — Cryptographic File Integrity Monitor
+# 🛡️ Week 7 — Sentinel FIM: Cryptographic File Integrity Monitoring
 
-[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Cryptography](https://img.shields.io/badge/cryptography-SHA--256%20(FIPS%20180--4)-success.svg)](https://csrc.nist.gov/publications/detail/fips/180-4/final)
-[![Dependencies](https://img.shields.io/badge/dependencies-Standard%20Library%20Only-brightgreen.svg)]()
-[![Test Suite](https://img.shields.io/badge/tests-57%20passed%20%7C%202%20skipped-informational.svg)]()
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/Cryptography-SHA--256-green?style=for-the-badge&logo=letsencrypt&logoColor=white" />
+  <img src="https://img.shields.io/badge/File%20Integrity-Monitoring-blueviolet?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Dependencies-Standard%20Library-brightgreen?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Internship-Week%2007-orange?style=for-the-badge" />
+</p>
 
-A modular, on-demand File Integrity Monitoring (FIM) tool implemented in Python. Sentinel FIM establishes cryptographic baselines using streaming SHA-256 digests, performs differential integrity auditing against target directories, and flags unauthorized file modifications, newly created assets, and deleted files.
+<p align="center">
+  <strong>Python-Based Cryptographic Hashing, File Integrity Verification & Tampering Detection</strong>
+</p>
 
----
-
-## Table of Contents
-
-- [1. Project Overview & Objectives](#1-project-overview--objectives)
-- [2. Key Features](#2-key-features)
-- [3. Cryptographic Security & Approach](#3-cryptographic-security--approach)
-  - [3.1 SHA-256 Fundamentals](#31-sha-256-fundamentals)
-  - [3.2 Collision Resistance: SHA-256 vs. MD5 and SHA-1](#32-collision-resistance-sha-256-vs-md5-and-sha-1)
-  - [3.3 Pre-Image and Second Pre-Image Resistance](#33-pre-image-and-second-pre-image-resistance)
-  - [3.4 The Cryptographic Avalanche Effect](#34-the-cryptographic-avalanche-effect)
-  - [3.5 Cryptographic Boundaries & Limitations](#35-cryptographic-boundaries--limitations)
-- [4. Project Architecture & Repository Structure](#4-project-architecture--repository-structure)
-  - [4.1 Repository Layout](#41-repository-layout)
-  - [4.2 Component Responsibilities](#42-component-responsibilities)
-- [5. Security Safeguards & Design Decisions](#5-security-safeguards--design-decisions)
-- [6. Configuration](#6-configuration)
-- [7. Installation & Setup](#7-installation--setup)
-- [8. Usage Guide](#8-usage-guide)
-  - [8.1 Baseline Mode](#81-baseline-mode)
-  - [8.2 Monitor Mode](#82-monitor-mode)
-  - [8.3 Exit Code Semantics](#83-exit-code-semantics)
-- [9. Tampering Demonstration & Audit Workflow](#9-tampering-demonstration--audit-workflow)
-- [10. Screenshots & Demonstration](#10-screenshots--demonstration)
-- [11. Automated Testing & Verification](#11-automated-testing--verification)
-- [12. Operational Limitations & Security Considerations](#12-operational-limitations--security-considerations)
-- [13. Future Enhancements](#13-future-enhancements)
+<p align="center">
+  GetIntern — 8-Week Practical Cybersecurity Internship | Week 7
+</p>
 
 ---
 
-## 1. Project Overview & Objectives
+## 1. Project Overview
 
-In cybersecurity operations, unauthorized changes to system binaries, configurations, or operational assets often serve as primary indicators of compromise (IoC). Adversaries, web shells, and unauthorized processes routinely modify source files, inject persistence mechanisms, or remove audit logs.
+**Sentinel FIM (File Integrity Monitor)** is a Python-based defensive cybersecurity tool developed to identify unauthorized changes to files through cryptographic hashing.
 
-**Sentinel FIM** addresses this problem by providing structured, on-demand differential integrity auditing:
+The project uses the **SHA-256 cryptographic hash algorithm** to establish a trusted baseline of files and subsequently compare the current filesystem state against that baseline.
 
-1. **Cryptographic State Capture**: Scans a designated directory tree, computes deterministic SHA-256 digests in memory-bounded binary streams, and records the trusted state in an isolated JSON baseline database.
-2. **On-Demand Differential Auditing**: Re-evaluates target files on demand against the trusted snapshot, classifying changes into **`[OK] INTACT`**, **`[ALERT] MODIFIED`**, **`[ALERT] CREATED`**, or **`[ALERT] DELETED`**.
-3. **Defensive Filesystem Handling**: Implements descriptor-bound hashing, metadata stability checks, path traversal boundaries, and symlink refusal to mitigate race conditions during inspection.
-4. **Standardized Status Signaling**: Returns deterministic exit codes (`0` for verified clean, `1` for compromised state or operational error) to support execution from administrative scripts or automation workflows.
+By comparing cryptographic digests, Sentinel FIM identifies:
 
-> [!NOTE]
-> Sentinel FIM operates as an **on-demand differential audit scanner**, not a continuous background filesystem monitoring daemon (such as kernel-level inotify or ReadDirectoryChangesW services). Integrity checks occur when explicitly invoked.
+- **Modified Files:** Existing files whose content has changed.
+- **Created Files:** New files that were not present in the original baseline.
+- **Deleted Files:** Previously recorded files that are no longer present.
+- **Intact Files:** Files whose current SHA-256 digest matches the trusted baseline.
+- **Scan Errors:** Filesystem inspection failures that prevent a reliable integrity assessment.
 
----
+The application follows a modular architecture, separating file scanning, baseline management, integrity comparison, and command-line execution.
 
-## 2. Key Features
+> **Important:** Sentinel FIM is an on-demand integrity auditing tool. It performs scans when explicitly executed; it is not a continuous background filesystem monitoring service.
 
-- **Standard Library Implementation**: Built exclusively on Python's standard library (`hashlib`, `os`, `stat`, `pathlib`, `json`, `argparse`). Zero third-party dependencies.
-- **Memory-Bounded 1 MiB Streaming**: Files are processed using a default buffer of 1 MiB (1,048,576 bytes), preventing memory exhaustion when hashing large files.
-- **Descriptor-Bound TOCTOU Mitigation**: Hashing is performed directly on low-level file descriptors (`os.open` with `O_RDONLY | O_NOFOLLOW` and `os.fstat`) to reduce common Time-Of-Check to Time-Of-Use race windows.
-- **Atomic Baseline Persistence**: Baselines are serialized to a temporary file, flushed and synced (`os.fsync`), and atomically swapped (`os.replace`) to prevent corrupted records if interrupted.
-- **Scan Error Surfacing**: Filesystem permission errors, missing resources, or unreadable assets during an audit prevent false-clean reporting and mark the system state as compromised.
-- **POSIX Path Normalization**: Cross-platform forward-slash path normalization prevents false anomalies caused by operating system separator differences (Windows backslashes vs. POSIX forward slashes).
+## 2. Project Objectives
 
----
+The primary objectives of this project are:
 
-## 3. Cryptographic Security & Approach
+1. **Understand Cryptographic Hashing:** Learn how SHA-256 generates fixed-length digests for files of different sizes.
+2. **Establish File Baselines:** Create and store trusted SHA-256 fingerprints of files in a monitored directory.
+3. **Detect Unauthorized Changes:** Identify modified, newly created, and deleted files through baseline comparison.
+4. **Implement Secure File Handling:** Use descriptor-bound file inspection and metadata stability checks to reduce filesystem race-condition risks.
+5. **Maintain Reliable Baselines:** Apply validation and atomic file replacement when saving baseline records.
+6. **Generate Audit Results:** Display integrity findings and use process exit codes to communicate audit outcomes.
+7. **Apply Defensive Programming:** Handle filesystem errors, invalid baseline data, and unsupported file conditions safely.
 
-### 3.1 SHA-256 Fundamentals
+## 3. Key Features
 
-Sentinel FIM uses **SHA-256 (Secure Hash Algorithm 256-bit)**, specified in NIST FIPS 180-4 (Secure Hash Standard). SHA-256 is an iterated cryptographic hash function based on the Merkle–Damgård construction, operating on 512-bit message blocks and producing a fixed 256-bit (32-byte) digest, typically formatted as a 64-character lowercase hexadecimal string.
+| Feature | Description |
+|---|---|
+| SHA-256 Hashing | Generates cryptographic fingerprints using SHA-256. |
+| Streaming File Processing | Processes files in 1 MiB chunks to keep memory usage bounded. |
+| Baseline Generation | Records trusted file paths and SHA-256 digests in JSON format. |
+| Integrity Verification | Compares current file hashes against the saved baseline. |
+| Tampering Detection | Identifies modified, created, and deleted files. |
+| Descriptor-Bound Hashing | Performs hashing through opened file descriptors to reduce TOCTOU risks. |
+| File Stability Checks | Detects relevant metadata changes during file inspection. |
+| Atomic Baseline Storage | Uses temporary-file writing and atomic replacement. |
+| Error Reporting | Surfaces scanning failures instead of reporting an incomplete scan as clean. |
+| CLI Interface | Supports baseline generation and integrity verification through command-line arguments. |
 
-### 3.2 Collision Resistance: SHA-256 vs. MD5 and SHA-1
+## 4. Cryptographic Concepts
 
-A cryptographic hash function possesses *collision resistance* if finding any two distinct inputs $x \neq y$ such that $H(x) = H(y)$ is computationally infeasible.
+### 4.1 What Is Cryptographic Hashing?
 
-| Metric / Property | MD5 (128-bit) | SHA-1 (160-bit) | SHA-256 (256-bit) |
-| :--- | :--- | :--- | :--- |
-| **Output Digest Size** | 128 bits (16 bytes) | 160 bits (20 bytes) | 256 bits (32 bytes) |
-| **Theoretical Collision Workfactor** | $2^{64}$ operations (Birthday bound) | $2^{80}$ operations (Birthday bound) | $2^{128}$ operations (Birthday bound) |
-| **Practical Security Status** | **Completely Broken** | **Cryptographically Broken** | **Secure / Recommended** |
-| **Demonstrated Attacks** | Practical collisions (Wang et al., 2004); collision generation in seconds on commodity hardware. | Identical PDF collision (SHAttered, 2017 in $2^{63.1}$ ops); chosen-prefix collisions (2020). | No known collision or chosen-prefix collision attacks. |
-| **FIM Suitability** | **Unacceptable**: Attackers can construct distinct files with identical MD5 digests. | **Unacceptable**: Practical collisions undermine trust in baseline records. | **Standard**: $2^{128}$ collision resistance workfactor exceeds classical computational limits. |
+Cryptographic hashing is the process of converting input data into a fixed-length output called a hash digest.
 
-### 3.3 Pre-Image and Second Pre-Image Resistance
+A cryptographic hash function accepts data of varying sizes and generates a digest that represents the input.
 
-In File Integrity Monitoring, collision resistance is necessary, but **pre-image** and **second pre-image resistance** are the primary defenses against targeted tampering:
+For file integrity monitoring, this digest acts as a fingerprint of file contents.
 
-1. **Pre-Image Resistance (One-Way Property)**: Given a digest $h$, it must be computationally infeasible to find any input $m$ such that $H(m) = h$. SHA-256 provides approximately $2^{256}$ operations of pre-image security.
-2. **Second Pre-Image Resistance**: Given a specific file $m_1$, it must be computationally infeasible to find a distinct file $m_2 \neq m_1$ such that $H(m_1) = H(m_2)$.
+If the file content changes, its resulting digest will normally change as well.
 
-**Relevance to FIM**:
-If an attacker modifies a file monitored by Sentinel FIM, defeating the monitor requires finding a *second pre-image*—crafting altered file content that produces the identical SHA-256 digest recorded in `baseline.json`. Because SHA-256 provides approximately 256 bits of second pre-image security ($2^{256}$ operations), forging an altered file that matches the baseline hash is computationally infeasible with classical computing systems.
+### 4.2 Understanding SHA-256
 
-> [!CAUTION]
-> **Important Cryptographic Distinction**:
-> Collision resistance ($H(x) = H(y)$ for *any* freely chosen pair) is bounded by the Birthday Paradox to $2^{128}$ operations for SHA-256. Second pre-image resistance ($H(m_2) = H(m_1)$ for a *fixed* target $m_1$) requires the full $2^{256}$ operations. Collision attacks do not directly equate to pre-image attacks.
+Sentinel FIM uses **SHA-256 (Secure Hash Algorithm 256-bit)**.
 
-### 3.4 The Cryptographic Avalanche Effect
+SHA-256 is part of the SHA-2 family and is specified in the NIST Secure Hash Standard, FIPS 180-4.
 
-SHA-256 exhibits a strict avalanche effect: altering a single bit or character in an input file produces an uncorrelated, pseudo-random change across approximately 50% of the output digest bits.
+Important properties:
 
-**Demonstrated Behavior on `monitored/sample.txt`**:
-- **Baseline State**:
-  - File Content ending: `Clean / Unmodified.`
-  - SHA-256: `f48a80cbb4a4cb88448a55a84eb5e04420dd0ba7db0893852fd41351f6aabc52`
-- **1-Character Modification**:
-  - File Content ending: `Clean / Xnmodified.` (altered single character `U` $\to$ `X`)
-  - SHA-256: `83bc51ff1476f0b684125e163ef0cde975df69dc99167e0798a657ed30d0f5d6`
+- Produces a 256-bit digest.
+- Produces a 64-character hexadecimal representation.
+- Processes message data in 512-bit blocks internally.
+- Supports files of different sizes.
+- Is designed to provide collision resistance and pre-image resistance.
 
-The modification of a single byte altered 60 of the 64 hexadecimal characters, triggering an immediate integrity alert during the audit pass.
+Example:
 
-### 3.5 Cryptographic Boundaries & Limitations
+```text
+Input:
+Hello World
 
-While SHA-256 reliably detects content alterations, cryptographic hashing alone has defined operational boundaries:
-- **Hashing does not prevent tampering**: A hash function detects changes retrospectively when audited; it does not stop an attacker or process from modifying files on disk.
-- **Hashing does not authenticate the baseline file**: If an adversary possesses write access to `output/baseline.json`, they could regenerate or edit baseline digests to match tampered files. Baseline integrity relies on filesystem permissions or external storage protections.
-- **Content hashing vs. Metadata**: The SHA-256 digest represents file content. While the hashing engine verifies metadata consistency during reading to detect concurrent writes, the baseline comparison evaluates content hashes and path existence, not filesystem timestamps or ACL changes.
+SHA-256:
+a591a6d40bf420404a011733cfb7b190
+d62c65bf0bcda32b57b277d9ad9f146e
+```
 
----
+The output is a fixed-length digest regardless of the original input size.
 
-## 4. Project Architecture & Repository Structure
+### 4.3 SHA-256 vs. MD5 and SHA-1
 
-### 4.1 Repository Layout
+| Property | MD5 | SHA-1 | SHA-256 |
+|---|---|---|---|
+| Digest Size | 128 bits | 160 bits | 256 bits |
+| Hex Length | 32 characters | 40 characters | 64 characters |
+| Collision Security | Broken | Broken | Currently recommended |
+| FIM Suitability | Not recommended | Not recommended | Suitable |
+
+MD5 and SHA-1 are unsuitable for security-sensitive integrity verification because practical collision attacks have been demonstrated.
+
+SHA-256 provides a substantially stronger security margin for this project.
+
+### 4.4 Avalanche Effect
+
+The avalanche effect describes how a small change in input data produces a substantially different hash digest.
+
+For example:
+
+```text
+Original File:
+Hello World
+
+Modified File:
+Hello world
+```
+
+Even though only one character changes, the resulting SHA-256 digest will be different.
+
+Sentinel FIM uses this property to detect file-content modifications.
+
+### 4.5 Cryptographic Security Limitations
+
+Cryptographic hashing provides integrity detection, not complete system protection.
+
+Important limitations:
+
+- Hashing does not prevent an attacker from modifying a file.
+- SHA-256 does not authenticate the baseline storage location.
+- An attacker with sufficient write access to the baseline could potentially replace the recorded hashes.
+- A matching content hash does not prove that file permissions, ownership, or access-control settings are unchanged.
+- A compromised system may also compromise the integrity-monitoring process.
+
+For stronger protection, baseline storage should be protected through restrictive filesystem permissions, trusted backups, or external integrity verification.
+
+## 5. Environment & Tools
+
+### 5.1 Development Environment
+
+| Component | Technology |
+|---|---|
+| Programming Language | Python 3.10+ |
+| Operating System | Windows / Linux / macOS |
+| Cryptographic Algorithm | SHA-256 |
+| Data Format | JSON |
+| Interface | Command-Line Interface |
+| Testing | Python unittest framework |
+| Dependency Model | Python Standard Library |
+
+### 5.2 Python Modules Used
+
+| Module | Purpose |
+|---|---|
+| `hashlib` | SHA-256 digest generation. |
+| `os` | File descriptors, filesystem operations, and atomic replacement. |
+| `stat` | File metadata inspection. |
+| `pathlib` | Filesystem path handling. |
+| `json` | Baseline and configuration serialization. |
+| `argparse` | Command-line argument parsing. |
+| `sys` | Process exit codes and execution support. |
+| `datetime` | Audit timestamps. |
+| `typing` | Type annotations and structured interfaces. |
+| `unittest` | Automated testing. |
+
+**No third-party Python packages are required by the implementation.**
+
+## 6. Project Architecture
+
+Sentinel FIM separates the scanning engine, baseline management, integrity comparison, and command-line orchestration into independent modules.
+
+### 6.1 Repository Structure
 
 ```text
 week-7-cryptographic-hashing-file-integrity-monitor/
+│
 ├── config/
-│   └── fim_config.json                 # Operational configuration (paths & algorithm)
-├── monitored/                          # Target directory for sample integrity auditing
+│   └── fim_config.json
+│
+├── monitored/
 │   ├── documents/
-│   │   └── guide.txt                   # Sample nested document
-│   └── sample.txt                      # Sample root document
-├── output/                             # Isolated baseline storage directory
+│   │   └── guide.txt
+│   └── sample.txt
+│
+├── output/
 │   ├── .gitkeep
-│   └── baseline.json                   # Trusted cryptographic baseline database
-├── screenshots/                        # Demonstration and verification artifacts
-│   ├── .gitkeep
-│   ├── 01-project-structure.png        # Screenshot: Repository and directory verification
-│   ├── 02-baseline-generation.png      # Screenshot: Baseline generation execution
-│   ├── 03-clean-integrity-check.png    # Screenshot: Clean verification pass
-│   ├── 04-tampering-detection.png      # Screenshot: Tamper detection alert
-│   ├── 05-restored-integrity.png       # Screenshot: Post-restoration verification
-│   └── 06-unit-test-results.png        # Screenshot: Unit test suite execution
+│   └── baseline.json
+│
+├── screenshots/
+│   ├── 01-project-structure.png
+│   ├── 02-baseline-generation.png
+│   ├── 03-clean-integrity-check.png
+│   ├── 04-tampering-detection.png
+│   ├── 05-restored-integrity.png
+│   └── 06-unit-test-results.png
+│
 ├── src/
-│   ├── __init__.py                     # Package export declarations
-│   ├── baseline.py                     # BaselineManager: atomic persistence & validation
-│   ├── fim_monitor.py                  # Primary CLI entrypoint, argument parsing, & reporting
-│   ├── hasher.py                       # Hardened descriptor-bound SHA-256 streaming scanner
-│   └── integrity_checker.py            # IntegrityChecker: differential analysis & alert logic
+│   ├── __init__.py
+│   ├── hasher.py
+│   ├── baseline.py
+│   ├── integrity_checker.py
+│   └── fim_monitor.py
+│
 ├── tests/
 │   ├── __init__.py
-│   ├── test_baseline.py                # 16 tests: generation, atomic save, schema validation
-│   ├── test_fim_monitor.py             # 11 tests: CLI args, config parsing, exit codes
-│   ├── test_hasher.py                  # 19 tests: streaming, TOCTOU stability, symlink checks
-│   └── test_integrity_checker.py       # 13 tests: differential matching, error surfacing
-├── .gitignore                          # Excludes .venv/, .dist/, __pycache__/, .env
-├── PHASE_0_AUDIT_REPORT.md             # Initial project audit record
-├── PHASE_1_FINAL_SECURITY_REVIEW.md    # Security review record
-├── PHASE_1_REMEDIATION_REPORT.md       # Implementation remediation record
-├── PHASE_2_1_REPORT.md                 # Baseline refactoring verification report
-├── PHASE_2_2_REPORT.md                 # Integrity checker refactoring verification report
-├── PHASE_2_ARCHITECTURE_PLAN.md        # Modular architecture design plan
-├── README.md                           # Technical documentation & project portfolio
-└── requirements.txt                    # Dependency declaration (Standard library only)
+│   ├── test_baseline.py
+│   ├── test_fim_monitor.py
+│   ├── test_hasher.py
+│   └── test_integrity_checker.py
+│
+├── .gitignore
+└── README.md
 ```
 
-### 4.2 Component Responsibilities
+*Note: `output/baseline.json` is generated during baseline creation. The structure above describes the intended project layout; generated files may not exist in a fresh checkout.*
 
+### 6.2 Component Responsibilities
+
+**1. `src/hasher.py` — Hashing & Scanning Engine**
+
+The authoritative filesystem scanning and hashing component.
+
+Responsibilities:
+
+- Generates SHA-256 digests.
+- Reads files using streaming chunks.
+- Uses descriptor-bound file inspection.
+- Checks relevant metadata before and after hashing.
+- Handles symbolic links and non-regular files defensively.
+- Returns structured scan results and errors.
+
+**2. `src/baseline.py` — Baseline Manager**
+
+Responsible for creating, validating, loading, and saving trusted baseline records.
+
+Responsibilities:
+
+- Generates baseline mappings.
+- Validates JSON baseline structures.
+- Validates SHA-256 digest formats.
+- Normalizes file paths.
+- Saves baseline records using temporary-file writing and atomic replacement.
+- Loads and validates existing baseline data.
+
+**3. `src/integrity_checker.py` — Integrity Checker**
+
+Compares the current filesystem state against the saved baseline.
+
+Responsibilities:
+
+- Identifies intact files.
+- Detects modified files.
+- Detects newly created files.
+- Detects deleted files.
+- Collects scanning errors.
+- Prevents incomplete scans from being treated as clean.
+
+**4. `src/fim_monitor.py` — CLI Entry Point**
+
+The primary command-line execution interface.
+
+Responsibilities:
+
+- Parses command-line arguments.
+- Loads JSON configuration.
+- Executes baseline generation.
+- Executes integrity verification.
+- Displays audit results.
+- Returns process exit codes.
+
+### 6.3 System Workflow
+
+```text
+                 SENTINEL FIM
+                       |
+                       v
+                CLI ENTRY POINT
+                       |
+             +---------+---------+
+             |                   |
+             v                   v
+       BASELINE MODE        MONITOR MODE
+             |                   |
+             v                   v
+       BaselineManager     BaselineManager
+             |                   |
+             v                   v
+       Scan Directory       Load Baseline
+             |                   |
+             v                   v
+       SHA-256 Hashing      Scan Directory
+             |                   |
+             v                   v
+       Save JSON Baseline   SHA-256 Hashing
+                                 |
+                                 v
+                         IntegrityChecker
+                                 |
+                                 v
+                        Compare File States
+                                 |
+                 +---------------+---------------+
+                 |               |               |
+                 v               v               v
+               INTACT          MODIFIED       CREATED
+                                 |
+                                 v
+                              DELETED
+                                 |
+                                 v
+                           AUDIT SUMMARY
+                                 |
+                                 v
+                            EXIT STATUS
 ```
-                                 CLI Entrypoint
-                          (python -m src.fim_monitor)
-                                       │
-                      ┌────────────────┴────────────────┐
-                      ▼                                 ▼
-              [--mode baseline]                 [--mode monitor]
-                      │                                 │
-                      ▼                                 ▼
-             src/baseline.py                 src/integrity_checker.py
-            (BaselineManager)                   (IntegrityChecker)
-              - Schema check                      - Differential diff
-              - Atomic persistence                - Anomaly categorization
-                      │                                 │
-                      └────────────────┬────────────────┘
-                                       │
-                                       ▼
-                                 src/hasher.py
-                               (scan_directory)
-                        - Descriptor-bound streaming
-                        - 1 MiB chunked SHA-256
-                        - TOCTOU metadata checks
-                        - Symlink / non-regular skip
+
+## 7. Security Safeguards & Design Decisions
+
+Security is an important part of Sentinel FIM's implementation.
+
+### 7.1 Memory-Bounded Streaming
+
+The hashing engine uses a default chunk size of:
+
+```python
+DEFAULT_CHUNK_SIZE = 1024 * 1024
 ```
 
-- **`src/hasher.py`**: The authoritative scanning and hashing engine. Implements `scan_directory()` and `calculate_sha256()`. Opens files using `os.open` with `O_RDONLY | O_NOFOLLOW`, inspects file descriptors with `os.fstat`, verifies metadata consistency before and after stream hashing, and returns structured `ScanResult` instances containing file digests, sizes, and aggregated errors.
-- **`src/baseline.py`**: Houses `BaselineManager`. Validates target directories, enforces SHA-256 hex format validation (`^[0-9a-f]{64}$`), normalizes relative paths, and handles atomic disk persistence via temporary files and `os.replace()`.
-- **`src/integrity_checker.py`**: Houses `IntegrityChecker`. Consumes baseline mappings and live `ScanResult` states to compute differential sets (`intact`, `created`, `modified`, `deleted`, `errors`). Guarantees that any scanning error prevents a false-clean verification.
-- **`src/fim_monitor.py`**: The primary CLI orchestration interface. Handles command-line arguments, validates JSON configuration, formats human-readable terminal alerts, and maps audit outcomes to process exit codes.
+This represents **1 MiB (1,048,576 bytes)**.
 
----
+Instead of loading an entire file into memory, the program reads it in smaller chunks and updates the SHA-256 digest incrementally.
 
-## 5. Security Safeguards & Design Decisions
+Benefits:
 
-The implementation incorporates several defensive programming measures:
+- Reduces memory consumption.
+- Supports large-file processing.
+- Avoids loading complete file contents into memory.
 
-1. **Memory-Bounded Hashing (1 MiB Buffer)**:
-   In `src/hasher.py`, hashing is performed via streaming chunks (`DEFAULT_CHUNK_SIZE = 1024 * 1024`, 1 MiB). Files of arbitrary size can be hashed without loading entire payloads into memory.
-2. **Descriptor-Bound Inspection**:
-   Files are opened once via `os.open` using `O_RDONLY` (and `O_BINARY` on Windows; `O_NOFOLLOW` where available). Subsequent inspections (`os.fstat`) and stream reads operate on the opened descriptor rather than re-resolving filesystem paths, narrowing common TOCTOU race windows.
-3. **File Stability Verification**:
-   The engine captures file metadata (`st_dev`, `st_ino`, `st_mode`, `st_size`, `st_mtime_ns`) prior to opening, on descriptor access, and after stream completion. If a file's identity, size, or modification metadata changes during the read, hashing raises `FileStabilityError` and treats the read as inconclusive.
-4. **Symbolic Link & Root Escape Rejection**:
-   Symlinks are not traversed (`followlinks=False`). If a symlink directory or file is encountered, it is recorded as an error and skipped. All resolved candidate paths must verify containment within the monitored root (`resolved_candidate.relative_to(resolved_root)`).
-5. **Atomic Baseline Persistence**:
-   `BaselineManager.save_baseline()` writes to `output/baseline.json.tmp.<pid>`, issues `os.fsync()` to force disk flush, and swaps the file using `os.replace()`. An abrupt termination or system failure will not corrupt an existing baseline.
-6. **Scan Error Surfacing**:
-   If unreadable files or directory permission errors occur during an audit pass, `IntegrityChecker` surfaces them in the audit summary and flags `is_compromised = True`. An incomplete or blind scan cannot return a false clean state.
-7. **Storage Isolation**:
-   `baseline.json` is located in `output/`, strictly outside `monitored/`, preventing recursive self-hashing loops and inadvertent baseline tampering.
+### 7.2 Descriptor-Bound File Inspection
 
----
+The hashing engine uses low-level file descriptors through `os.open()`.
 
-## 6. Configuration
+Where supported, it uses flags such as:
 
-Sentinel FIM is configured through `config/fim_config.json`:
+```python
+os.O_RDONLY
+os.O_NOFOLLOW
+```
+
+It also uses `os.fstat()` to inspect the opened file descriptor.
+
+This reduces the risk of certain Time-Of-Check to Time-Of-Use (TOCTOU) race conditions caused by repeatedly resolving a filesystem path.
+
+The exact availability of operating-system flags depends on the platform.
+
+### 7.3 File Stability Verification
+
+File metadata is inspected during the hashing process.
+
+Relevant metadata includes:
+
+- Device identifier.
+- Inode identifier.
+- File mode.
+- File size.
+- Modification timestamp in nanoseconds.
+
+If relevant metadata changes during hashing, the operation can be rejected as an unstable file read.
+
+This helps avoid accepting a digest from a file that changed while being inspected.
+
+### 7.4 Symbolic Link Handling
+
+Symbolic links are handled defensively.
+
+The scanner avoids following directory symlinks and rejects unsupported or unsafe file entries rather than treating them as ordinary files.
+
+This reduces the possibility of unintended traversal outside the monitored directory.
+
+### 7.5 Atomic Baseline Persistence
+
+Baseline records are written through a temporary file before being moved into the final destination.
+
+The implementation uses:
+
+- JSON serialization.
+- File flushing.
+- `os.fsync()`.
+- `os.replace()`.
+
+This helps prevent a partially written baseline from replacing the previous baseline during an interrupted save operation.
+
+### 7.6 Scan Error Handling
+
+Filesystem errors must not be silently treated as successful integrity verification.
+
+If the scanner encounters relevant errors, the integrity checker reports them and marks the audit as compromised.
+
+This is important because an incomplete scan cannot reliably establish that all monitored files are intact.
+
+### 7.7 Baseline Storage Isolation
+
+The baseline file is stored separately from the monitored directory:
+
+```text
+monitored/
+    Files under inspection
+
+output/
+    baseline.json
+```
+
+This prevents the baseline file from being included in its own monitored scan.
+
+It does not, by itself, protect the baseline from an attacker who has sufficient write permissions.
+
+## 8. Configuration
+
+Sentinel FIM uses a JSON configuration file:
+
+**Location:** `config/fim_config.json`
 
 ```json
 {
@@ -232,344 +441,486 @@ Sentinel FIM is configured through `config/fim_config.json`:
 }
 ```
 
-### Configuration Parameters:
-- **`algorithm`**: Hash algorithm to utilize. Fixed to `"sha256"` (other algorithms raise `ValueError`).
-- **`monitored_directory`**: Target directory audited during baseline generation and monitoring passes.
-- **`baseline_file`**: Relative or absolute path where the baseline snapshot database is stored.
+### Configuration Parameters
 
-CLI arguments override configuration file values when supplied.
+| Parameter | Description |
+|---|---|
+| `algorithm` | Cryptographic hashing algorithm. The implementation supports SHA-256 only. |
+| `monitored_directory` | Directory containing the files to inspect. |
+| `baseline_file` | Location used to save or load baseline JSON data. |
 
----
+Command-line arguments can override the configured monitored directory and baseline file.
 
-## 7. Installation & Setup
+## 9. Installation & Setup
 
-### Prerequisites
+### 9.1 Prerequisites
+
 - Python 3.10 or higher.
 - Git.
 - Windows, Linux, or macOS.
+- Basic knowledge of Python and command-line operations.
 
-### Clone the Repository
+### 9.2 Clone the Repository
+
 ```bash
 git clone https://github.com/injmam089/week-7-cryptographic-hashing-file-integrity-monitor.git
+
 cd week-7-cryptographic-hashing-file-integrity-monitor
 ```
 
-### Environment Setup (Optional Virtual Environment)
-Sentinel FIM requires only the Python standard library. A virtual environment can optionally be established:
+### 9.3 Create a Virtual Environment (Optional)
+
+**Windows:**
 
 ```bash
-# Windows
 python -m venv .venv
-.venv\Scripts\activate
 
-# Linux / macOS
+.venv\Scripts\activate
+```
+
+**Linux / macOS:**
+
+```bash
 python3 -m venv .venv
+
 source .venv/bin/activate
 ```
 
-Verify the environment:
+### 9.4 Verify Python
+
 ```bash
-python -V
+python --version
 ```
 
----
+Sentinel FIM uses Python's standard library and does not require third-party package installation.
 
-## 8. Usage Guide
+## 10. Usage Guide
 
-Invoke Sentinel FIM using Python module execution syntax:
+The application supports two primary execution modes:
+
+1. Baseline Generation.
+2. Integrity Verification.
+
+General command format:
 
 ```bash
 python -m src.fim_monitor --mode <baseline|monitor> [OPTIONS]
 ```
 
-### Verified CLI Options:
-| Flag | Type | Description | Default |
-| :--- | :---: | :--- | :--- |
-| **`--mode`** | String | Execution mode: `baseline` or `monitor`. *(Required)* | N/A |
-| **`--dir`** | Path | Target directory to monitor. | Value from `fim_config.json` (`monitored`) |
-| **`--baseline`** | Path | Destination/source baseline JSON file. | Value from `fim_config.json` (`output/baseline.json`) |
-| **`--config`** | Path | Path to custom configuration file. | `config/fim_config.json` |
+### 10.1 Command-Line Arguments
 
----
+| Argument | Description |
+|---|---|
+| `--mode` | Required execution mode: `baseline` or `monitor`. |
+| `--dir` | Optional monitored directory path. |
+| `--baseline` | Optional baseline JSON path. |
+| `--config` | Optional custom configuration file path. |
 
-### 8.1 Baseline Mode
+### 10.2 Baseline Generation
 
-Generates a fresh cryptographic snapshot of all regular files within the target folder and writes the baseline database:
+The first step is to create a trusted baseline of the monitored files.
+
+Run:
 
 ```bash
 python -m src.fim_monitor --mode baseline
 ```
 
-#### Execution Details:
-1. Validates the existence of the target directory.
-2. Traverses regular files and computes SHA-256 digests in 1 MiB stream buffers.
-3. Validates digest formatting and schema.
-4. Atomically saves records to `output/baseline.json`.
+During baseline generation, the application:
 
-#### Example Console Output:
+1. Reads the monitored directory.
+2. Scans eligible files.
+3. Calculates SHA-256 digests.
+4. Creates a mapping of relative file paths and their hashes.
+5. Validates the generated baseline data.
+6. Saves the baseline JSON file.
+
+Expected output pattern:
+
 ```text
 =================================================================
  SENTINEL FIM -- BASELINE SNAPSHOT GENERATION
 =================================================================
-[*] Timestamp           : 2026-11-22 02:19:31
 [*] Monitored Directory : monitored
 [*] Baseline Target     : output/baseline.json
-[*] Hash Algorithm      : SHA-256 (4096-byte chunk streaming)
+[*] Hash Algorithm      : SHA-256
 -----------------------------------------------------------------
-[RECORDED] monitored/documents/guide.txt
-           Hash: 727867fc351e5ded36d152ef24a093a9b2ce74f4fbc1165a3f8a6cc14a264844
 [RECORDED] monitored/sample.txt
-           Hash: f48a80cbb4a4cb88448a55a84eb5e04420dd0ba7db0893852fd41351f6aabc52
------------------------------------------------------------------
-[SUCCESS] Baseline successfully established for 2 file(s).
+           Hash: <SHA-256 digest>
+
+[SUCCESS] Baseline successfully established.
 [SUCCESS] Saved snapshot to: output/baseline.json
 =================================================================
 ```
 
-> [!NOTE]
-> *Implementation Note on Console Output*: The CLI banner string displays `(4096-byte chunk streaming)` as an output label, while the underlying cryptographic engine in `src/hasher.py` buffers and streams binary data in 1 MiB blocks (`DEFAULT_CHUNK_SIZE = 1024 * 1024`).
+*The example illustrates the output format. Actual file paths, timestamps, and digest values depend on the local execution.*
 
----
+### 10.3 Integrity Verification
 
-### 8.2 Monitor Mode
-
-Performs an on-demand differential verification audit comparing current filesystem contents to `output/baseline.json`:
+After establishing the baseline, run:
 
 ```bash
 python -m src.fim_monitor --mode monitor
 ```
 
-#### Clean State Output (All Files Intact):
-```text
-=================================================================
- SENTINEL FIM -- INTEGRITY VERIFICATION AUDIT
-=================================================================
-[*] Timestamp           : 2026-11-22 02:29:40
-[*] Monitored Directory : monitored
-[*] Reference Baseline  : output/baseline.json
------------------------------------------------------------------
-[OK] INTACT:    monitored/documents/guide.txt
-[OK] INTACT:    monitored/sample.txt
------------------------------------------------------------------
-AUDIT SUMMARY:
-  Baseline Files : 2
-  Current Files  : 2
-  Intact Files   : 2
-  Created Files  : 0
-  Modified Files : 0
-  Deleted Files  : 0
------------------------------------------------------------------
-[STATUS] INTEGRITY VERIFIED: All files match trusted baseline.
-=================================================================
-```
+The application:
 
-#### Compromised State Output (Tampered File Detected):
+1. Loads the saved baseline.
+2. Validates the baseline data.
+3. Scans the monitored directory.
+4. Calculates current SHA-256 digests.
+5. Compares current state against the trusted baseline.
+6. Categorizes detected differences.
+7. Displays the audit summary.
+
+Possible status messages:
+
 ```text
-=================================================================
- SENTINEL FIM -- INTEGRITY VERIFICATION AUDIT
-=================================================================
-[*] Timestamp           : 2026-11-22 02:25:52
-[*] Monitored Directory : monitored
-[*] Reference Baseline  : output/baseline.json
------------------------------------------------------------------
+[OK] INTACT: monitored/sample.txt
+
 [ALERT] MODIFIED: monitored/sample.txt
-        Baseline SHA-256: f48a80cbb4a4cb88448a55a84eb5e04420dd0ba7db0893852fd41351f6aabc52
-        Current  SHA-256: 1da913f5d141879f7c0b850b973fb66bcdbd7eccb80dfc9093e76f899a852824
------------------------------------------------------------------
-AUDIT SUMMARY:
-  Baseline Files : 2
-  Current Files  : 2
-  Intact Files   : 1
-  Created Files  : 0
-  Modified Files : 1
-  Deleted Files  : 0
------------------------------------------------------------------
-[STATUS] INTEGRITY COMPROMISED: 1 anomaly(ies) detected!
-=================================================================
+
+[ALERT] CREATED: monitored/new_file.txt
+
+[ALERT] DELETED: monitored/old_file.txt
+
+[ERROR] SCAN ERROR: <file path>
 ```
 
----
+Only the status relevant to the actual audit will be displayed.
 
-### 8.3 Exit Code Semantics
+### 10.4 Custom Directory
 
-Sentinel FIM issues deterministic exit codes to communicate status:
-- **`0` (Success / Clean)**:
-  - Baseline mode: Baseline generated and persisted successfully.
-  - Monitor mode: All monitored files match the baseline; zero anomalies and zero scan errors.
-- **`1` (Integrity Breach or Operational Error)**:
-  - Baseline mode: Monitored directory does not exist, or unreadable files blocked baseline generation.
-  - Monitor mode: One or more anomalies detected (`CREATED`, `MODIFIED`, `DELETED`), unreadable scan errors encountered, or baseline file missing.
+To monitor a different directory:
 
----
+```bash
+python -m src.fim_monitor --mode baseline --dir monitored
+```
 
-## 9. Tampering Demonstration & Audit Workflow
+To use a custom baseline file:
 
-To verify Sentinel FIM's detection capabilities, an administrator can conduct an illustrative tampering test:
+```bash
+python -m src.fim_monitor --mode baseline --dir monitored --baseline output/custom_baseline.json
+```
 
-### Step 1: Establish Trusted Baseline
+To perform verification with the same custom paths:
+
+```bash
+python -m src.fim_monitor --mode monitor --dir monitored --baseline output/custom_baseline.json
+```
+
+### 10.5 Exit Code Semantics
+
+The CLI uses process exit codes to communicate execution results.
+
+| Exit Code | Meaning |
+|---|---|
+| `0` | Successful baseline generation or clean integrity verification. |
+| `1` | Integrity anomaly, scan failure, or operational error. |
+
+These exit codes can be used by administrative scripts to determine whether an audit completed successfully.
+
+## 11. Tampering Demonstration & Audit Workflow
+
+The following workflow demonstrates how Sentinel FIM can identify file modifications.
+
+### Step 1 — Establish a Trusted Baseline
+
+Run:
+
 ```bash
 python -m src.fim_monitor --mode baseline
 ```
 
-### Step 2: Verify Initial Clean State
+The application records the current file hashes.
+
+### Step 2 — Verify Clean Integrity
+
+Run:
+
 ```bash
 python -m src.fim_monitor --mode monitor
 ```
-*Expected: Exit code 0, all files flagged `[OK] INTACT`.*
 
-### Step 3: Simulate Unauthorized Modification
-Simulate an attacker appending unauthorized data to an existing monitored document:
+If the monitored files have not changed and the scan completes successfully, they should be reported as intact.
 
-```bash
-# Windows Command Prompt
-echo TAMPERING TEST - unauthorized modification >> monitored\sample.txt
+### Step 3 — Modify a Monitored File
 
-# Linux / macOS
-# echo "TAMPERING TEST - unauthorized modification" >> monitored/sample.txt
+Modify an existing file, such as:
+
+```text
+monitored/sample.txt
 ```
 
-### Step 4: Execute Monitor Audit
+For example, add or change a line of text.
+
+### Step 4 — Run Integrity Verification Again
+
 ```bash
 python -m src.fim_monitor --mode monitor
 ```
-*Result: Process reports `[ALERT] MODIFIED: monitored/sample.txt`, displaying both baseline and altered digests, and terminates with exit code 1.*
 
-### Step 5: Restore Clean State
-Restore the monitored file to match the baseline state:
+The current digest will differ from the recorded baseline digest.
+
+The application should report the affected file as:
+
+```text
+[ALERT] MODIFIED: monitored/sample.txt
+```
+
+### Step 5 — Restore the Original File
+
+Restore the original file contents.
+
+Run the monitor again:
 
 ```bash
-# Using Git checkout/restore for sample file
-git restore monitored/sample.txt
-
-# Re-run audit pass
 python -m src.fim_monitor --mode monitor
 ```
-*Result: Integrity status returns to `[STATUS] INTEGRITY VERIFIED`, and process exits with code 0.*
 
-> [!NOTE]
-> **Multi-Anomaly Coverage**: In addition to single-file modifications demonstrated above, comprehensive multi-vector scenarios (simultaneous file additions, alterations, and removals) are verified programmatically in the test suite (`tests/test_fim_monitor.py` and `tests/test_integrity_checker.py`), ensuring that multiple concurrent anomalies are captured in a single audit pass.
+If the original content is restored and the file matches the baseline, it should be reported as intact.
 
----
+> **Important:** Restoring the original file content is different from generating a new baseline. Generating a new baseline changes the reference state against which future audits are compared.
 
-## 10. Screenshots & Demonstration
+## 12. Automated Testing & Verification
 
-The following visual records document repository setup, baseline establishment, anomaly detection, restoration, and automated test execution.
+Sentinel FIM includes a unit test suite covering the major application components.
 
-### 1. Project Structure & Environment Verification
-Inspection of repository root, source directory (`src/`), and test suite (`tests/`).
+### 12.1 Test Modules
 
-![Project Structure](screenshots/01-project-structure.png)
+| Test File | Testing Scope |
+|---|---|
+| `test_hasher.py` | SHA-256 hashing, file scanning, streaming, metadata stability, and file handling. |
+| `test_baseline.py` | Baseline generation, validation, persistence, and loading. |
+| `test_integrity_checker.py` | Integrity comparison, file categorization, and scan-error handling. |
+| `test_fim_monitor.py` | CLI arguments, configuration, execution behavior, and exit codes. |
 
----
+### 12.2 Run the Test Suite
 
-### 2. Baseline Snapshot Generation
-Execution of `python -m src.fim_monitor --mode baseline`, indexing initial sample files and saving `output/baseline.json`.
-
-![Baseline Generation](screenshots/02-baseline-generation.png)
-
----
-
-### 3. Clean Integrity Verification
-Execution of `python -m src.fim_monitor --mode monitor` confirming that all monitored files match the baseline with zero anomalies.
-
-![Clean Integrity Verification](screenshots/03-clean-integrity-check.png)
-
----
-
-### 4. Unauthorized Tampering Detection
-Demonstration of an unauthorized modification to `monitored/sample.txt`, resulting in an immediate `[ALERT] MODIFIED` detection and compromised status exit.
-
-![Tampering Detection](screenshots/04-tampering-detection.png)
-
----
-
-### 5. Restored Integrity Verification
-Reversion of the modified file using `git restore` and subsequent audit re-run, returning the system to `[STATUS] INTEGRITY VERIFIED`.
-
-![Restored Integrity](screenshots/05-restored-integrity.png)
-
----
-
-### 6. Automated Test Suite Execution
-Complete execution of the project's 59 automated test cases across all modules with verbose output.
-
-![Automated Test Results](screenshots/06-unit-test-results.png)
-
----
-
-## 11. Automated Testing & Verification
-
-Sentinel FIM maintains automated unit and integration tests across all four core modules.
-
-### Running the Test Suite
-
-Execute tests using the standard library `unittest` runner:
+From the project root directory:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-### Verified Test Execution Results:
-```text
-Ran 59 tests in 0.568s
+### 12.3 Testing Objectives
 
-OK (skipped=2)
-```
+The automated tests are designed to verify:
 
-### Metrics Summary:
-- **Total Tests Discovered**: 59
-- **Passed**: 57
-- **Skipped**: 2
-- **Failed**: 0
-- **Execution Time**: ~0.56s
+- Correct SHA-256 digest generation.
+- Correct file scanning behavior.
+- Baseline creation and validation.
+- Atomic baseline persistence behavior.
+- Detection of modified files.
+- Detection of created files.
+- Detection of deleted files.
+- Handling of scan errors.
+- Command-line argument processing.
+- Correct process exit behavior.
 
-### Reason for Skipped Tests:
-Two tests in `tests/test_hasher.py` (`test_symbolic_link_root_is_rejected_when_supported` and `test_symlinks_are_skipped_when_supported`) evaluate symbolic-link rejection behavior. On Windows operating systems, creating filesystem symbolic links requires administrative elevation (`SeCreateSymbolicLinkPrivilege`) or Developer Mode. When tests run in a standard non-elevated user context, the test suite catches this limitation and marks the tests as `skipped 'symbolic links are unavailable in this environment'` rather than reporting a false failure.
+### 12.4 Test Results
 
-### Test Coverage Breakdown:
-| Test Module | Tests | Focus Area |
-| :--- | :---: | :--- |
-| **`tests/test_hasher.py`** | 19 | 1 MiB chunked streaming, descriptor lifecycle, TOCTOU metadata verification, non-regular file refusal, symlink skipping. |
-| **`tests/test_baseline.py`** | 16 | Directory traversal, schema validation, 64-character hex regex enforcement, atomic temporary-file swap (`os.replace`). |
-| **`tests/test_integrity_checker.py`** | 13 | Differential sets (`intact`, `created`, `modified`, `deleted`), path normalization parity, scan error surfacing. |
-| **`tests/test_fim_monitor.py`** | 11 | CLI argument parsing, configuration fallback, exit code validation (`0` vs. `1`), end-to-end audit reporting. |
+Run the test command locally and record the actual result here.
+
+Do not treat an expected test count as a verified result. The final test count and skipped tests should match the latest execution.
+
+## 13. Evidence & Screenshots
+
+The `screenshots/` directory contains visual evidence of the project's implementation and execution.
+
+| Screenshot | Description |
+|---|---|
+| `01-project-structure.png` | Project directory structure and module organization. |
+| `02-baseline-generation.png` | Execution of the baseline generation process. |
+| `03-clean-integrity-check.png` | Successful integrity verification without detected changes. |
+| `04-tampering-detection.png` | Detection of a modified monitored file. |
+| `05-restored-integrity.png` | Integrity verification after restoring the original file content. |
+| `06-unit-test-results.png` | Terminal output from automated unit testing. |
+
+### Project Evidence
+
+**1. Project Structure**
+
+![Project Structure](screenshots/01-project-structure.png)
+
+**2. Baseline Generation**
+
+![Baseline Generation](screenshots/02-baseline-generation.png)
+
+**3. Clean Integrity Verification**
+
+![Clean Integrity Check](screenshots/03-clean-integrity-check.png)
+
+**4. Tampering Detection**
+
+![Tampering Detection](screenshots/04-tampering-detection.png)
+
+**5. Restored Integrity**
+
+![Restored Integrity](screenshots/05-restored-integrity.png)
+
+**6. Unit Test Results**
+
+![Unit Test Results](screenshots/06-unit-test-results.png)
+
+## 14. Security Considerations & Limitations
+
+Sentinel FIM is designed for defensive file integrity auditing. However, it has limitations that should be understood before using it in a production environment.
+
+### 14.1 Baseline Protection
+
+The baseline JSON file is a critical trust reference.
+
+If an attacker can modify both the monitored files and the baseline, they may be able to conceal unauthorized changes.
+
+Recommended protections:
+
+- Restrict write permissions on the baseline.
+- Store trusted baseline copies separately.
+- Use protected backups.
+- Consider external or digitally authenticated baseline storage.
+
+### 14.2 On-Demand Monitoring
+
+Sentinel FIM runs when explicitly invoked.
+
+It does not currently provide:
+
+- Continuous background monitoring.
+- Kernel-level filesystem event monitoring.
+- Automatic real-time alerts.
+- Automatic file restoration.
+- Automatic firewall configuration.
+
+### 14.3 Filesystem Limitations
+
+Filesystem behavior can differ across operating systems.
+
+File descriptor flags and metadata availability are platform-dependent. The implementation uses defensive checks, but it cannot eliminate every possible filesystem race condition.
+
+### 14.4 Content Integrity vs. System Integrity
+
+SHA-256 verifies file content.
+
+It does not independently verify:
+
+- File ownership.
+- File permissions.
+- Access-control lists.
+- Extended attributes.
+- Filesystem configuration.
+- The integrity of the operating system itself.
+
+### 14.5 Scan Errors
+
+A failed or incomplete scan must not be interpreted as proof of integrity.
+
+Sentinel FIM surfaces scanning errors so that an administrator can investigate the affected files or directories.
+
+## 15. Current Scope & Future Improvements
+
+### 15.1 Current Implementation
+
+The current implementation focuses on:
+
+- SHA-256-based file fingerprinting.
+- Streaming file hashing.
+- Trusted baseline generation.
+- JSON baseline validation.
+- Atomic baseline persistence.
+- Differential integrity comparison.
+- Modified, created, and deleted file detection.
+- Descriptor-bound file inspection.
+- Metadata stability checks.
+- Symbolic-link handling.
+- CLI-based execution.
+- Automated unit testing.
+
+### 15.2 Future Improvements
+
+Potential enhancements include:
+
+1. **Continuous Monitoring:** Integrate operating-system filesystem event mechanisms.
+2. **Baseline Authentication:** Introduce digitally signed baseline records.
+3. **Centralized Reporting:** Send audit results to a centralized logging platform.
+4. **Notification System:** Add email or dashboard notifications for detected anomalies.
+5. **Metadata Monitoring:** Extend checks to selected file permissions and ownership properties.
+6. **Scheduled Audits:** Support automated periodic integrity verification.
+7. **Enhanced Reporting:** Generate structured HTML or PDF audit reports.
+
+These are proposed improvements, not claims about existing functionality.
+
+## 16. Security Concepts Learned
+
+Through this project, the following cybersecurity concepts were explored:
+
+- Cryptographic hashing and SHA-256.
+- File integrity monitoring.
+- Baseline generation and comparison.
+- Cryptographic collision resistance.
+- Pre-image and second pre-image resistance.
+- Avalanche effect.
+- File-system security.
+- Time-Of-Check to Time-Of-Use (TOCTOU) risks.
+- Descriptor-bound file operations.
+- Symbolic-link security.
+- Atomic file operations.
+- Defensive error handling.
+- Security testing and verification.
+
+## 17. Learning Outcomes
+
+This project provided practical experience in developing a modular defensive cybersecurity application.
+
+Key learning outcomes:
+
+- Understanding how cryptographic hashes support file integrity verification.
+- Implementing SHA-256 hashing using Python.
+- Processing files through memory-bounded streaming.
+- Creating and validating JSON-based baselines.
+- Detecting unauthorized file modifications.
+- Applying defensive filesystem handling.
+- Structuring a Python security tool into reusable modules.
+- Testing security-related functionality using automated unit tests.
+- Interpreting integrity audit results.
+
+## 18. Conclusion
+
+**Sentinel FIM** demonstrates how cryptographic hashing can be applied to defensive cybersecurity and file integrity monitoring.
+
+By establishing trusted SHA-256 baselines and comparing them against current filesystem states, the application can identify modified, created, and deleted files.
+
+The project also emphasizes secure implementation practices, including streaming file processing, descriptor-bound inspection, metadata stability checks, atomic baseline persistence, and explicit scan-error handling.
+
+Sentinel FIM provides a practical foundation for understanding file integrity monitoring and the role of cryptographic verification in system security.
 
 ---
 
-## 12. Operational Limitations & Security Considerations
+## 19. Author
 
-When deploying or assessing Sentinel FIM, security analysts should consider the following operational characteristics:
+**Injmam Ansari**
 
-1. **Baseline Database Trust Boundary**:
-   The integrity of any FIM audit relies entirely on the integrity of the baseline reference database (`output/baseline.json`). If an adversary gains write access to `baseline.json`, they can overwrite baseline hashes with tampered file digests. In production environments, baseline records should be stored on write-once media (WORM), protected via operating system access control lists (ACLs), or cryptographically signed.
-2. **On-Demand vs. Continuous Event Monitoring**:
-   Sentinel FIM executes on demand. Changes that occur between scheduled audit runs remain undetected until the next execution pass. It does not replace real-time operating system kernel file system auditing (such as Linux `auditd` or Windows Sysmon FileCreate/FileDelete events).
-3. **Metadata Audit Scope**:
-   While `src/hasher.py` checks file metadata stability during stream hashing to prevent race conditions, the differential engine (`src/integrity_checker.py`) audits file existence and content digests. Benign metadata modifications (such as changes to `st_atime` or access permissions that do not alter content) are not recorded as content modifications.
-4. **Symbolic Links**:
-   To prevent symlink traversal attacks, directory escaping, and infinite recursion, Sentinel FIM treats symbolic links as non-regular files and skips them. Symbolic links should not be used as monitored root directories.
+BCA Student | Cybersecurity & Software Development
+
+- GitHub: [@injmam089](https://github.com/injmam089)
+- Project Repository: [Sentinel FIM — Week 7](https://github.com/injmam089/week-7-cryptographic-hashing-file-integrity-monitor)
 
 ---
 
-## 13. Future Enhancements
+## 20. Internship Context
 
-Potential extensions to augment Sentinel FIM for broader deployments:
+**GetIntern — 8-Week Practical Cybersecurity Internship**
 
-1. **Cryptographic Baseline Signing (HMAC / Asymmetric Signatures)**:
-   Implement HMAC-SHA256 or digital signature validation (e.g., Ed25519) on `output/baseline.json` using an external secret key to verify the baseline has not been modified between audit runs.
-2. **Continuous Kernel Event Integration**:
-   Pair on-demand auditing with native filesystem notifications (`inotify` on Linux, `ReadDirectoryChangesW` on Windows) to trigger differential audits immediately upon filesystem write events.
-3. **Regex Pattern Exclusion Rules**:
-   Allow administrators to define ignore patterns in `fim_config.json` (e.g., dynamic log files, temporary cache files) to reduce false positives in active directories.
-4. **Structured SIEM Output**:
-   Add an optional `--output-format json` flag to emit machine-readable audit reports for ingestion into log forwarders and SIEM pipelines.
+**Week 7:** Cryptographic Hashing & File Integrity Monitoring
+
+This project was developed as part of practical cybersecurity learning, focusing on cryptographic verification, defensive filesystem analysis, and integrity monitoring.
 
 ---
 
-## 14. Repository Metadata
+<p align="center">
+  <strong>Built with Python | Focused on Defensive Cybersecurity</strong>
+</p>
 
-- **Project**: Sentinel FIM — Cryptographic File Integrity Monitor
-- **Repository**: [https://github.com/injmam089/week-7-cryptographic-hashing-file-integrity-monitor](https://github.com/injmam089/week-7-cryptographic-hashing-file-integrity-monitor)
-- **Standard**: NIST FIPS 180-4 (SHA-256)
-- **Language**: Python 3.10+
-- **License**: Standard educational / portfolio project license
+<p align="center">
+  <sub>For educational and authorized defensive security purposes only.</sub>
+</p>
