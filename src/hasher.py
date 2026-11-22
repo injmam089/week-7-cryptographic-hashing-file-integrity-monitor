@@ -11,11 +11,14 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Union
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024  # 1 MiB
+MAX_STABILITY_RETRIES = 2
+RETRY_BACKOFF_SECONDS = 0.05  # 50 ms
 
 
 class FileStabilityError(RuntimeError):
@@ -27,7 +30,7 @@ class ScanResult:
     """Results of a recursive scan, including individual file failures."""
 
     root_directory: str
-    files: list[dict[str, Union[str, int]]] = field(default_factory=list)
+    files: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, str]] = field(default_factory=list)
     total_files: int = 0
     total_errors: int = 0
@@ -99,14 +102,76 @@ def _assert_regular(metadata: os.stat_result, file_path: Path) -> None:
         raise FileStabilityError(f"Not a regular file: {file_path}")
 
 
-def _calculate_sha256_with_size(
+def get_alternate_data_streams(file_path: Union[str, Path]) -> list[dict[str, Union[str, int]]]:
+    """Enumerate NTFS Alternate Data Streams (ADS) for a file on Windows using FindFirstStreamW.
+
+    Returns a list of dictionaries with 'stream_name' and 'size_bytes' for every stream
+    other than the primary unnamed data stream ('::$DATA').
+    Returns an empty list on non-Windows platforms or filesystems without ADS support.
+    """
+    if os.name != "nt":
+        return []
+
+    import ctypes
+    from ctypes import wintypes
+
+    class WIN32_FIND_STREAM_DATA(ctypes.Structure):
+        _fields_ = [
+            ("StreamSize", ctypes.c_longlong),
+            ("cStreamName", wintypes.WCHAR * 296),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    find_first_stream_w = kernel32.FindFirstStreamW
+    find_first_stream_w.argtypes = [wintypes.LPCWSTR, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    find_first_stream_w.restype = wintypes.HANDLE
+
+    find_next_stream_w = kernel32.FindNextStreamW
+    find_next_stream_w.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    find_next_stream_w.restype = wintypes.BOOL
+
+    find_close = kernel32.FindClose
+    find_close.argtypes = [wintypes.HANDLE]
+    find_close.restype = wintypes.BOOL
+
+    resolved = str(Path(file_path).resolve())
+    if len(resolved) >= 260 and not resolved.startswith("\\\\?\\"):
+        resolved = "\\\\?\\" + resolved
+
+    stream_data = WIN32_FIND_STREAM_DATA()
+    handle = find_first_stream_w(resolved, 0, ctypes.byref(stream_data), 0)
+
+    # INVALID_HANDLE_VALUE check (-1 or unsigned 64-bit equivalent)
+    if handle in (-1, wintypes.HANDLE(-1).value):
+        err = ctypes.GetLastError()
+        # 1: ERROR_INVALID_FUNCTION, 38: ERROR_HANDLE_EOF, 50: ERROR_NOT_SUPPORTED, 87: ERROR_INVALID_PARAMETER
+        if err in (1, 38, 50, 87):
+            return []
+        if err == 5:  # ERROR_ACCESS_DENIED
+            raise PermissionError(f"Access denied enumerating streams: {file_path}")
+        return []
+
+    streams: list[dict[str, Union[str, int]]] = []
+    try:
+        while True:
+            stream_name = str(stream_data.cStreamName)
+            if stream_name and stream_name.lower() != "::$data":
+                streams.append({
+                    "stream_name": stream_name,
+                    "size_bytes": int(stream_data.StreamSize),
+                })
+            if not find_next_stream_w(handle, ctypes.byref(stream_data)):
+                break
+    finally:
+        find_close(handle)
+
+    return sorted(streams, key=lambda s: str(s["stream_name"]))
+
+
+def _calculate_sha256_with_size_once(
     file_path: Union[str, Path], chunk_size: int = DEFAULT_CHUNK_SIZE
 ) -> tuple[str, int]:
-    """Hash a stable regular file and return its digest and descriptor size.
-
-    Files are read only through fixed-size binary chunks. Symlinks and
-    non-regular files are rejected instead of being followed or interpreted.
-    """
+    """Execute a single descriptor-bound SHA-256 pass on a regular stable file."""
     _validate_chunk_size(chunk_size)
     path = Path(file_path)
     initial = path.lstat()
@@ -144,13 +209,34 @@ def _calculate_sha256_with_size(
         os.close(descriptor)
 
 
-def calculate_sha256(file_path: Union[str, Path], chunk_size: int = DEFAULT_CHUNK_SIZE) -> str:
-    """Return a SHA-256 digest after checking file identity and stability.
+def _calculate_sha256_with_size(
+    file_path: Union[str, Path],
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    max_retries: int = 0,
+    backoff: float = RETRY_BACKOFF_SECONDS,
+) -> tuple[str, int]:
+    """Hash a stable regular file and return its digest and descriptor size.
 
-    Files are read only through fixed-size binary chunks. Symlinks and
-    non-regular files are rejected instead of being followed or interpreted.
+    Includes optional bounded retries for transient FileStabilityError conditions.
     """
-    return _calculate_sha256_with_size(file_path, chunk_size)[0]
+    for attempt in range(max_retries + 1):
+        try:
+            return _calculate_sha256_with_size_once(file_path, chunk_size)
+        except FileStabilityError:
+            if attempt < max_retries:
+                time.sleep(backoff * (attempt + 1))
+                continue
+            raise
+
+
+def calculate_sha256(
+    file_path: Union[str, Path],
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    max_retries: int = 0,
+    backoff: float = RETRY_BACKOFF_SECONDS,
+) -> str:
+    """Return a SHA-256 digest after checking file identity and stability."""
+    return _calculate_sha256_with_size(file_path, chunk_size, max_retries, backoff)[0]
 
 
 def _relative_path(path: Path, root: Path) -> str:
@@ -164,8 +250,6 @@ def _safe_error_relative_path(filename: Optional[str], root: Path) -> str:
     try:
         return _relative_path(path, root)
     except ValueError:
-        # os.walk implementations may report a filename already relative to
-        # the walk root. Keep that useful context without accepting traversal.
         if not path.is_absolute() and ".." not in path.parts:
             return path.as_posix()
         return "."
@@ -181,11 +265,17 @@ def _record_error(result: ScanResult, relative_path: str, error: BaseException) 
     )
 
 
-def scan_directory(directory: Union[str, Path], chunk_size: int = DEFAULT_CHUNK_SIZE) -> ScanResult:
+def scan_directory(
+    directory: Union[str, Path],
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    max_retries: int = MAX_STABILITY_RETRIES,
+    backoff: float = RETRY_BACKOFF_SECONDS,
+) -> ScanResult:
     """Recursively hash regular files below *directory* without following links.
 
     Per-file and traversal failures are captured in ``ScanResult.errors``. Root
-    and chunk-size validation failures are raised immediately.
+    and chunk-size validation failures are raised immediately. Retries transient
+    FileStabilityError up to *max_retries* times.
     """
     _validate_chunk_size(chunk_size)
     root = Path(directory)
@@ -214,6 +304,7 @@ def scan_directory(directory: Union[str, Path], chunk_size: int = DEFAULT_CHUNK_
             _record_error(result, current_relative, error)
             directories[:] = []
             continue
+
         retained_directories = []
         for name in directories:
             candidate = current_path / name
@@ -241,14 +332,22 @@ def scan_directory(directory: Union[str, Path], chunk_size: int = DEFAULT_CHUNK_
                 except ValueError as error:
                     raise FileStabilityError(f"Path escapes monitored root: {candidate}") from error
                 _assert_regular(candidate_stat, candidate)
-                digest, size_bytes = _calculate_sha256_with_size(candidate, chunk_size)
-                result.files.append(
-                    {
-                        "relative_path": relative,
-                        "sha256": digest,
-                        "size_bytes": size_bytes,
-                    }
+
+                digest, size_bytes = _calculate_sha256_with_size(
+                    candidate, chunk_size, max_retries=max_retries, backoff=backoff
                 )
+
+                file_entry: dict[str, Any] = {
+                    "relative_path": relative,
+                    "sha256": digest,
+                    "size_bytes": size_bytes,
+                }
+
+                streams = get_alternate_data_streams(candidate)
+                if streams:
+                    file_entry["alternate_streams"] = streams
+
+                result.files.append(file_entry)
             except (OSError, ValueError, FileStabilityError) as error:
                 _record_error(result, relative, error)
 
@@ -274,12 +373,16 @@ class FileHasher:
 
 __all__ = [
     "DEFAULT_CHUNK_SIZE",
+    "MAX_STABILITY_RETRIES",
+    "RETRY_BACKOFF_SECONDS",
     "FileHasher",
     "FileStabilityError",
     "ScanResult",
     "calculate_sha256",
+    "get_alternate_data_streams",
     "scan_directory",
     "_calculate_sha256_with_size",
+    "_calculate_sha256_with_size_once",
     "_metadata_signature",
     "_path_and_descriptor_match",
     "_safe_error_relative_path",

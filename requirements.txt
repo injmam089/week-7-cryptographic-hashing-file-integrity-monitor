@@ -1,0 +1,3 @@
+# Sentinel FIM — Cryptographic File Integrity Monitor
+# Standard library only: No external third-party dependencies required.
+# Requires Python 3.10+

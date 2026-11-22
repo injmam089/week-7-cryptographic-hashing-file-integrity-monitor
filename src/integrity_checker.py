@@ -1,9 +1,10 @@
 """Sentinel FIM - Integrity Checker Module.
 
 Responsible for comparing real-time filesystem states against the recorded baseline
-to detect unauthorized modifications, newly introduced rogue files, or deleted assets.
-Consumes ScanResult from the authoritative descriptor-bound hasher engine and guarantees
-that incomplete scans containing errors never report a clean integrity status.
+to detect unauthorized modifications, newly introduced rogue files, deleted assets,
+or Alternate Data Streams (ADS). Consumes ScanResult from the authoritative
+descriptor-bound hasher engine and guarantees that incomplete scans containing
+errors never report a clean integrity status.
 """
 
 from __future__ import annotations
@@ -54,7 +55,10 @@ class IntegrityChecker:
         self.baseline_data = baseline_data
 
     def normalize_path(self, path: Union[str, Path]) -> str:
-        """Normalize a filepath to POSIX forward slashes and strip legacy folder prefixes.
+        """Normalize a filepath to POSIX forward slashes relative to the monitored directory.
+
+        Does NOT remove legitimate nested directory components. Rejects path traversal
+        attempts escaping the root directory.
 
         Args:
             path: Relative or raw filepath string.
@@ -62,22 +66,35 @@ class IntegrityChecker:
         Returns:
             Normalized POSIX path string relative to the monitored directory.
         """
-        posix_path = str(path).replace("\\", "/").strip()
-        if posix_path.startswith("./"):
-            posix_path = posix_path[2:]
+        raw = str(path).replace("\\", "/").strip()
+        if not raw:
+            raise ValueError("Path cannot be empty")
 
-        prefix = f"{self.monitored_dir.name}/"
-        if posix_path.startswith(prefix) and len(posix_path) > len(prefix):
-            posix_path = posix_path[len(prefix):]
+        p = Path(raw)
+        mon_resolved = self.monitored_dir.resolve(strict=False)
 
-        return posix_path
+        if p.is_absolute():
+            try:
+                resolved = p.resolve(strict=False)
+                return resolved.relative_to(mon_resolved).as_posix()
+            except ValueError:
+                raise ValueError(f"Path '{path}' escapes monitored root '{self.monitored_dir}'")
+
+        combined = (self.monitored_dir / p).resolve(strict=False)
+        try:
+            rel = combined.relative_to(mon_resolved).as_posix()
+        except ValueError:
+            raise ValueError(f"Path traversal detected: '{path}' escapes monitored root")
+
+        return rel
 
     def check_integrity(self) -> Dict[str, Any]:
         """Perform integrity verification and report detected anomalies.
 
         Delegates directory discovery exclusively to scan_directory(). Compares
         the live cryptographic state against the trusted baseline. Explicitly
-        captures scanning errors to prevent false-clean reporting.
+        captures scanning errors and suspicious alternate data streams to prevent
+        false-clean reporting.
 
         Returns:
             Dictionary containing categorized results:
@@ -85,14 +102,11 @@ class IntegrityChecker:
             - modified: Files whose checksums have changed
             - created: Files newly created since baseline
             - deleted: Files present in baseline but missing from disk
+            - suspicious_streams: Files detected with alternate data streams (ADS)
             - errors: Traversal or permission errors encountered during scan
             - has_scan_errors: True if scanner reported incomplete scan
             - total_monitored: Total valid files discovered during live scan
-            - is_compromised: True if modifications, additions, deletions, or errors detected
-
-        Raises:
-            FileNotFoundError: If the monitored directory does not exist.
-            NotADirectoryError: If the monitored path points to a file.
+            - is_compromised: True if modifications, additions, deletions, ADS, or errors detected
         """
         if not self.monitored_dir.exists():
             raise FileNotFoundError(f"Monitored directory not found: {self.monitored_dir}")
@@ -120,6 +134,15 @@ class IntegrityChecker:
         modified: List[Dict[str, str]] = []
         created: List[Dict[str, str]] = []
         deleted: List[Dict[str, str]] = []
+        suspicious_streams: List[Dict[str, Any]] = []
+
+        # Check for Alternate Data Streams (ADS) on scanned files
+        for entry in scan_result.files:
+            if "alternate_streams" in entry and entry["alternate_streams"]:
+                suspicious_streams.append({
+                    "path": self.normalize_path(str(entry["relative_path"])),
+                    "streams": entry["alternate_streams"],
+                })
 
         # Compare existing common files
         for filepath in sorted(current_files & baseline_files):
@@ -149,13 +172,16 @@ class IntegrityChecker:
             })
 
         has_scan_errors = bool(not scan_result.success or scan_result.errors)
-        is_compromised = bool(modified or created or deleted or has_scan_errors)
+        is_compromised = bool(
+            modified or created or deleted or has_scan_errors or suspicious_streams
+        )
 
         return {
             "intact": intact,
             "modified": modified,
             "created": created,
             "deleted": deleted,
+            "suspicious_streams": suspicious_streams,
             "errors": scan_result.errors,
             "has_scan_errors": has_scan_errors,
             "total_monitored": len(current_state),

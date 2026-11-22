@@ -63,6 +63,30 @@ class FimMonitorTests(unittest.TestCase):
             cfg = load_config(self.config_file)
         self.assertEqual(cfg["algorithm"], "sha256")
 
+    def test_load_config_rejects_unsupported_algorithm(self) -> None:
+        self.config_file.write_text(json.dumps({
+            "algorithm": "md5",
+            "monitored_directory": "monitored",
+            "baseline_file": "output/baseline.json"
+        }), encoding="utf-8")
+        with self.assertRaises(ValueError) as context:
+            load_config(self.config_file)
+        self.assertIn("Unsupported algorithm", str(context.exception))
+
+    def test_load_config_rejects_missing_keys_and_falls_back(self) -> None:
+        self.config_file.write_text(json.dumps({
+            "algorithm": "sha256",
+            "monitored_directory": "monitored"
+        }), encoding="utf-8")
+        cfg = load_config(self.config_file)
+        self.assertEqual(cfg["baseline_file"], DEFAULT_BASELINE_FILE)
+
+    def test_load_config_rejects_non_dict(self) -> None:
+        self.config_file.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+        with self.assertRaises(ValueError) as context:
+            load_config(self.config_file)
+        self.assertIn("Config root must be a JSON object", str(context.exception))
+
     def test_format_display_path(self) -> None:
         mon_dir = Path("monitored")
         self.assertEqual(_format_display_path("sample.txt", mon_dir), "monitored/sample.txt")
@@ -164,6 +188,124 @@ class FimMonitorTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exit_ctx:
                 main()
             self.assertEqual(exit_ctx.exception.code, 0)
+
+    def test_banner_displays_1mib_chunk_size(self) -> None:
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", new=stdout):
+            run_baseline(self.monitored_dir, self.baseline_file)
+        output = stdout.getvalue()
+        self.assertIn("1 MiB chunk streaming", output)
+        self.assertNotIn("4096-byte chunk streaming", output)
+
+    def test_cli_generate_key(self) -> None:
+        target_key_file = self.workspace / "test.key"
+        test_args = ["fim_monitor.py", "--mode", "generate-key", "--key-file", str(target_key_file)]
+        with mock.patch("sys.argv", test_args), mock.patch("sys.stdout", new=io.StringIO()):
+            with self.assertRaises(SystemExit) as exit_ctx:
+                main()
+            self.assertEqual(exit_ctx.exception.code, 0)
+        self.assertTrue(target_key_file.is_file())
+        key_hex = target_key_file.read_text(encoding="ascii").strip()
+        self.assertEqual(len(key_hex), 64)
+        self.assertEqual(len(bytes.fromhex(key_hex)), 32)
+
+    def test_cli_generate_key_refuses_overwrite(self) -> None:
+        target_key_file = self.workspace / "existing.key"
+        original_canary = "0" * 64
+        target_key_file.write_text(original_canary, encoding="ascii")
+        test_args = ["fim_monitor.py", "--mode", "generate-key", "--key-file", str(target_key_file)]
+        stderr = io.StringIO()
+        with mock.patch("sys.argv", test_args), mock.patch("sys.stdout", new=io.StringIO()), mock.patch("sys.stderr", new=stderr):
+            with self.assertRaises(SystemExit) as exit_ctx:
+                main()
+            self.assertEqual(exit_ctx.exception.code, 1)
+        self.assertIn("Key generation aborted", stderr.getvalue())
+        self.assertEqual(target_key_file.read_text(encoding="ascii"), original_canary)
+
+    def test_cli_rejects_force_and_overwrite_flags(self) -> None:
+        target_key_file = self.workspace / "test.key"
+        for bad_flag in ("--force", "--overwrite"):
+            test_args = ["fim_monitor.py", "--mode", "generate-key", "--key-file", str(target_key_file), bad_flag]
+            with mock.patch("sys.argv", test_args), mock.patch("sys.stdout", new=io.StringIO()), mock.patch("sys.stderr", new=io.StringIO()):
+                with self.assertRaises(SystemExit) as exit_ctx:
+                    main()
+                self.assertEqual(exit_ctx.exception.code, 2)
+
+    def test_cli_migrate_baseline(self) -> None:
+        test_hash = "a" * 64
+        legacy_baseline = {"file.txt": test_hash}
+        self.baseline_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.baseline_file, "w", encoding="utf-8") as f:
+            json.dump(legacy_baseline, f)
+
+        key_file = self.workspace / "migrated.key"
+        test_args = [
+            "fim_monitor.py",
+            "--mode", "migrate-baseline",
+            "--dir", str(self.monitored_dir),
+            "--baseline", str(self.baseline_file),
+            "--key-file", str(key_file),
+        ]
+        with mock.patch("sys.argv", test_args), mock.patch("sys.stdout", new=io.StringIO()):
+            with self.assertRaises(SystemExit) as exit_ctx:
+                main()
+            self.assertEqual(exit_ctx.exception.code, 0)
+
+        self.assertTrue(key_file.is_file())
+        with open(self.baseline_file, "r", encoding="utf-8") as f:
+            migrated_payload = json.load(f)
+        self.assertEqual(migrated_payload["auth_mode"], "hmac-sha256")
+
+    def test_cli_migrate_baseline_backup_collision_fails(self) -> None:
+        test_hash = "a" * 64
+        legacy_baseline = {"file.txt": test_hash}
+        self.baseline_file.parent.mkdir(parents=True, exist_ok=True)
+        self.baseline_file.write_text(json.dumps(legacy_baseline), encoding="utf-8")
+
+        from datetime import datetime
+        fixed_time = datetime(2026, 11, 22, 12, 0, 0)
+        ts_str = fixed_time.strftime("%Y%m%d_%H%M%S")
+        collision_backup = self.baseline_file.with_name(f"{self.baseline_file.name}.legacy.{ts_str}.bak")
+        collision_backup.write_text("existing_backup", encoding="utf-8")
+
+        key_file = self.workspace / "migrated.key"
+        test_args = [
+            "fim_monitor.py",
+            "--mode", "migrate-baseline",
+            "--dir", str(self.monitored_dir),
+            "--baseline", str(self.baseline_file),
+            "--key-file", str(key_file),
+        ]
+        stderr = io.StringIO()
+        with mock.patch("sys.argv", test_args), mock.patch("sys.stdout", new=io.StringIO()), mock.patch("sys.stderr", new=stderr), mock.patch("src.baseline.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_time
+            with self.assertRaises(SystemExit) as exit_ctx:
+                main()
+            self.assertEqual(exit_ctx.exception.code, 1)
+        self.assertIn("backup collision detected", stderr.getvalue())
+        self.assertEqual(collision_backup.read_text(encoding="utf-8"), "existing_backup")
+
+    def test_run_monitor_rejects_tampered_baseline(self) -> None:
+        self.write_file("test.txt", b"data")
+        key_file = self.workspace / "mon.key"
+        with mock.patch("sys.stdout", new=io.StringIO()):
+            run_baseline(self.monitored_dir, self.baseline_file, key_file=key_file)
+
+        # Tamper with baseline directly
+        with open(self.baseline_file, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        payload["files"]["test.txt"] = "f" * 64
+        with open(self.baseline_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("sys.stdout", new=stdout), mock.patch("sys.stderr", new=stderr):
+            code = run_monitor(self.monitored_dir, self.baseline_file, key_file=key_file)
+        self.assertEqual(code, 1)
+        err_out = stderr.getvalue()
+        self.assertIn("Baseline Authentication Failed", err_out)
+        self.assertIn("tampered with", err_out)
 
 
 if __name__ == "__main__":

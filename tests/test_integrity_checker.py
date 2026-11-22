@@ -48,9 +48,21 @@ class IntegrityCheckerTests(unittest.TestCase):
         self.assertEqual(checker.normalize_path(r"nested\file.txt"), "nested/file.txt")
         # Leading ./
         self.assertEqual(checker.normalize_path("./sample.txt"), "sample.txt")
-        # Legacy monitored_dir folder prefix
-        self.assertEqual(checker.normalize_path("monitored/sample.txt"), "sample.txt")
-        self.assertEqual(checker.normalize_path(r"monitored\nested\file.txt"), "nested/file.txt")
+        # Preserves nested directory with same name as monitored_dir (SEC-02 fix)
+        self.assertEqual(checker.normalize_path("monitored/sample.txt"), "monitored/sample.txt")
+        self.assertEqual(checker.normalize_path(r"monitored\nested\file.txt"), "monitored/nested/file.txt")
+        # Absolute path within monitored directory
+        abs_file = (self.monitored_dir / "sample.txt").resolve()
+        self.assertEqual(checker.normalize_path(abs_file), "sample.txt")
+
+    def test_normalize_path_rejects_traversal(self) -> None:
+        checker = IntegrityChecker(self.monitored_dir, {})
+        with self.assertRaises(ValueError):
+            checker.normalize_path("../outside.txt")
+        with self.assertRaises(ValueError):
+            checker.normalize_path("../../etc/passwd")
+        with self.assertRaises(ValueError):
+            checker.normalize_path("")
 
     def test_clean_baseline_no_changes(self) -> None:
         f1 = self.write_file("file1.txt", b"content 1")
@@ -159,20 +171,66 @@ class IntegrityCheckerTests(unittest.TestCase):
         self.assertEqual(report["deleted"][0]["path"], "deleted.txt")
         self.assertEqual(report["created"][0]["path"], "created.ps1")
 
-    def test_legacy_path_normalization_compatibility(self) -> None:
+    def test_path_normalization_and_backslash_compatibility(self) -> None:
         f1 = self.write_file("sample.txt", b"clean content")
         f2 = self.write_file("docs/guide.txt", b"guide content")
 
-        # Baseline formatted with legacy folder prefix and backslashes
-        legacy_baseline = {
-            "monitored/sample.txt": calculate_sha256(f1),
-            r"monitored\docs\guide.txt": calculate_sha256(f2),
+        baseline = {
+            "./sample.txt": calculate_sha256(f1),
+            r"docs\guide.txt": calculate_sha256(f2),
         }
 
-        checker = IntegrityChecker(self.monitored_dir, legacy_baseline)
+        checker = IntegrityChecker(self.monitored_dir, baseline)
         report = checker.check_integrity()
 
         # Should match cleanly without false alerts
+        self.assertFalse(report["is_compromised"])
+        self.assertEqual(len(report["intact"]), 2)
+        self.assertEqual(len(report["created"]), 0)
+        self.assertEqual(len(report["deleted"]), 0)
+
+    def test_alternate_data_stream_detection(self) -> None:
+        f1 = self.write_file("normal.txt", b"clean content")
+        baseline = {"normal.txt": calculate_sha256(f1)}
+
+        mock_result = ScanResult(
+            root_directory=str(self.monitored_dir),
+            files=[{
+                "relative_path": "normal.txt",
+                "sha256": baseline["normal.txt"],
+                "size_bytes": 13,
+                "alternate_streams": [{"stream_name": ":hidden:$DATA", "size_bytes": 42}],
+            }],
+            errors=[],
+            total_files=1,
+            total_errors=0,
+            success=True,
+        )
+
+        with mock.patch("src.integrity_checker.scan_directory", return_value=mock_result):
+            checker = IntegrityChecker(self.monitored_dir, baseline)
+            report = checker.check_integrity()
+
+        self.assertTrue(report["is_compromised"])
+        self.assertEqual(len(report["suspicious_streams"]), 1)
+        self.assertEqual(report["suspicious_streams"][0]["path"], "normal.txt")
+        self.assertEqual(
+            report["suspicious_streams"][0]["streams"],
+            [{"stream_name": ":hidden:$DATA", "size_bytes": 42}],
+        )
+
+    def test_nested_duplicate_collision_detection(self) -> None:
+        f_top = self.write_file("file.txt", b"top level file")
+        f_nested = self.write_file("monitored/file.txt", b"nested subfolder file")
+
+        baseline = {
+            "file.txt": calculate_sha256(f_top),
+            "monitored/file.txt": calculate_sha256(f_nested),
+        }
+
+        checker = IntegrityChecker(self.monitored_dir, baseline)
+        report = checker.check_integrity()
+
         self.assertFalse(report["is_compromised"])
         self.assertEqual(len(report["intact"]), 2)
         self.assertEqual(len(report["created"]), 0)

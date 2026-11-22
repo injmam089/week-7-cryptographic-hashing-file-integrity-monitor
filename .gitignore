@@ -15,6 +15,12 @@ build/
 # Environment files
 .env
 
+# Cryptographic key material (DO NOT COMMIT)
+*.key
+.baseline.key
+.fim_key
+
+
 # Editor & IDE directories
 .vscode/
 .idea/

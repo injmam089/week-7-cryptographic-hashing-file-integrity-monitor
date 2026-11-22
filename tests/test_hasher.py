@@ -3,6 +3,7 @@
 import hashlib
 import os
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,11 +12,14 @@ from unittest import mock
 
 from src.hasher import (
     DEFAULT_CHUNK_SIZE,
+    MAX_STABILITY_RETRIES,
+    RETRY_BACKOFF_SECONDS,
     FileHasher,
     FileStabilityError,
     _safe_error_relative_path,
     _validate_chunk_size,
     calculate_sha256,
+    get_alternate_data_streams,
     scan_directory,
 )
 
@@ -256,6 +260,65 @@ class HasherTests(unittest.TestCase):
         for algorithm in ("md5", "sha1", "sha512", None):
             with self.assertRaises(ValueError):
                 FileHasher(algorithm)  # type: ignore[arg-type]
+
+    def test_transient_stability_error_retries_and_recovers(self) -> None:
+        path = self.write("transient.txt", b"transient data")
+        attempts = 0
+        expected_digest = hashlib.sha256(b"transient data").hexdigest()
+
+        def flakey_calc(target, chunk_size=DEFAULT_CHUNK_SIZE):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise FileStabilityError(f"Transient lock on {target}")
+            return (expected_digest, len(b"transient data"))
+
+        with mock.patch("src.hasher._calculate_sha256_with_size_once", side_effect=flakey_calc):
+            result = scan_directory(self.root)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.total_errors, 0)
+        self.assertEqual(result.total_files, 1)
+        self.assertEqual(result.files[0]["sha256"], expected_digest)
+        self.assertEqual(attempts, 2)
+
+    def test_persistent_stability_error_fails_after_max_retries(self) -> None:
+        path = self.write("permanent_fail.txt", b"failing data")
+        attempts = 0
+
+        def always_fail(target, chunk_size=DEFAULT_CHUNK_SIZE):
+            nonlocal attempts
+            attempts += 1
+            raise FileStabilityError(f"Persistent modification on {target}")
+
+        with mock.patch("src.hasher._calculate_sha256_with_size_once", side_effect=always_fail):
+            result = scan_directory(self.root)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.total_errors, 1)
+        self.assertEqual(result.errors[0]["error_type"], "FileStabilityError")
+        # 1 initial attempt + MAX_STABILITY_RETRIES retries
+        self.assertEqual(attempts, 1 + MAX_STABILITY_RETRIES)
+
+    def test_alternate_data_streams_enumeration_on_windows(self) -> None:
+        path = self.write("ads_test.txt", b"primary data")
+        if sys.platform != "win32":
+            self.assertEqual(get_alternate_data_streams(path), [])
+            return
+
+        ads_path = self.root / "ads_test.txt:hidden_payload"
+        try:
+            with open(ads_path, "wb") as f:
+                f.write(b"secret stream content")
+        except OSError:
+            self.skipTest("NTFS Alternate Data Streams not supported by filesystem")
+
+        streams = get_alternate_data_streams(path)
+        self.assertTrue(any("hidden_payload" in s["stream_name"] for s in streams))
+
+        # Ensure primary ::$DATA is excluded from alternate stream reporting
+        self.assertFalse(any(s["stream_name"].lower() == "::$data" for s in streams))
+
 
 
 if __name__ == "__main__":
